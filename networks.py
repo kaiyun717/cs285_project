@@ -181,7 +181,8 @@ class PendulumTransition(Transition):
 
 CONFIG = {
     'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
-    'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition)
+    'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition),
+    'hopper': (HopperEncoder, HopperDecoder, HopperTransition)
 }
 
 def load_config(name):

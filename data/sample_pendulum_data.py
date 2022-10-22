@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 import argparse
 
-env = gym.make('Pendulum-v0').env
+env = gym.make('Pendulum-v1').env
 width, height = 48 * 2, 48
 
 def render(state):

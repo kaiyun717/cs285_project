@@ -11,6 +11,7 @@ from datasets import *
 import data.sample_planar as planar_sampler
 import data.sample_pendulum_data as pendulum_sampler
 import data.sample_cartpole_data as cartpole_sampler
+import data.sample_hopper_data as hopper_sampler
 
 torch.set_default_dtype(torch.float64)
 
@@ -19,8 +20,13 @@ if torch.cuda.is_available():
 else:
   device = torch.device("cpu")
 datasets = {'planar': PlanarDataset, 'pendulum': GymPendulumDatasetV2}
-settings = {'planar': (1600, 2, 2), 'pendulum': (4608, 3, 1)}
-samplers = {'planar': planar_sampler, 'pendulum': pendulum_sampler, 'cartpole': cartpole_sampler}
+settings = {'planar': (1600, 2, 2), 
+            'pendulum': (4608, 3, 1),
+            }
+samplers = {'planar': planar_sampler, 
+            'pendulum': pendulum_sampler, 
+            'cartpole': cartpole_sampler,
+            'hopper': hopper_sampler}
 num_eval = 10 # number of images evaluated on tensorboard
 
 # dataset = datasets['planar']('./data/data/' + 'planar')

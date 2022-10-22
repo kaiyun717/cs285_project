@@ -77,7 +77,7 @@ def sample_cartpole(sample_size, output_dir='data/cartpole', step_size=5, apply_
                 'samples': samples
             }, outfile, indent=2)
 
-    env.viewer.close()
+    # env.viewer.close()
 
 def main(args):
     sample_size = args.sample_size
