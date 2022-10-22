@@ -14,7 +14,10 @@ import data.sample_cartpole_data as cartpole_sampler
 
 torch.set_default_dtype(torch.float64)
 
-device = torch.device("cuda")
+if torch.cuda.is_available():
+  device = torch.device("cuda")
+else:
+  device = torch.device("cpu")
 datasets = {'planar': PlanarDataset, 'pendulum': GymPendulumDatasetV2}
 settings = {'planar': (1600, 2, 2), 'pendulum': (4608, 3, 1)}
 samplers = {'planar': planar_sampler, 'pendulum': pendulum_sampler, 'cartpole': cartpole_sampler}

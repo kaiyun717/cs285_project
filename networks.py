@@ -58,6 +58,11 @@ class Transition(nn.Module):
         self.fc_o = nn.Linear(self.h_dim, self.z_dim)
         torch.nn.init.orthogonal_(self.fc_o.weight)
 
+        if torch.cuda.is_available():
+          self.device = torch.device("cuda")
+        else:
+          self.device = torch.device("cpu")
+
     def forward(self, z_bar_t, q_z_t, u_t):
         """
         :param z_bar_t: the reference point
@@ -73,7 +78,7 @@ class Transition(nn.Module):
         v_t = torch.unsqueeze(v_t, dim=-1)
         r_t = torch.unsqueeze(r_t, dim=-2)
 
-        A_t = torch.eye(self.z_dim).repeat(z_bar_t.size(0), 1, 1).cuda() + torch.bmm(v_t, r_t)
+        A_t = torch.eye(self.z_dim).repeat(z_bar_t.size(0), 1, 1).to(self.device) + torch.bmm(v_t, r_t)
 
         B_t = B_t.view(-1, self.z_dim, self.u_dim)
 
