@@ -1,36 +1,69 @@
+from configparser import Interpolation
 import os
 from os import path
 from tqdm import trange
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import gym
-import json
 from datetime import datetime
 import argparse
+import cv2
 
+def maxpool_downsample(image: np.ndarray, out_size:int):
+    """ https://scipython.com/blog/binning-a-2d-array-in-numpy/
+        https://stackoverflow.com/questions/48121916/numpy-resize-rescale-image
+    """
+    in_size = image.shape[1]
+    assert in_size > out_size
+    
+    last = image.shape[0] > image.shape[-1] # rgb info is in the last index
+    if last:
+        rgb = image.shape[-1]
+        assert rgb == 3     # seems like rgb photos can only do 'last' ordering
+        
+        bin_size = in_size // out_size
+        small_image = image.reshape((out_size, bin_size,
+                                     out_size, bin_size, rgb)).max(3).max(1)
+    else:
+        rgb = image.shape[0]
+        
+        bin_size = in_size // out_size
+        small_image = image.reshape((rgb, out_size, bin_size,
+                                     out_size, bin_size)).max(4).max(2)
+
+    return small_image
+
+def opencv_downsample(image: np.ndarray, out_size: tuple):
+    resized = cv2.resize(image, dsize=out_size, interpolation=cv2.INTER_CUBIC)
+    return resized
+        
 def sample_hopper(sample_size, 
                   output_dir='data/hopper',
+                  obs_type='serial',
+                  obs_res=None,
                   step_size=4, 
-                  apply_control=True, 
-                  num_shards=10):
+                  apply_control=True):
+
+    assert obs_type in ['image', 'serial']
+    assert obs_res == None if obs_type == 'serial' else type(obs_res) is int
 
     env = gym.make('Hopper-v4')
-    assert sample_size % num_shards == 0
 
-    samples = []
+    obs_size = env.observation_space.shape[0]
+    act_size = env.action_space.shape[0]
+
+    obs_serial = np.zeros((sample_size, 2, obs_size))
+    act_serial = np.zeros((sample_size, act_size))
     
-    if not path.exists(output_dir):
-        os.makedirs(output_dir)
-
     output_dir = output_dir \
         + '/sample-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
     if not path.exists(output_dir):
         os.makedirs(output_dir)
-
-
+    
     state = env.reset()
     for i in trange(sample_size):
-        initial_state = state
+        before_state = state
         before = env.render(mode='rgb_array')
 
         if apply_control:
@@ -39,54 +72,57 @@ def sample_hopper(sample_size,
             u = np.zeros((3,))
 
         for _ in range(step_size):
-            state, reward, done, info = env.step(u)
+            state, _, _, _ = env.step(u)
 
         after_state = state
         after = env.render(mode='rgb_array')
 
-        shard_no = i // (sample_size // num_shards)
+        if obs_type == 'image': 
+            # before = maxpool_downsample(before, before.shape[1], obs_res)
+            before = opencv_downsample(before, (obs_res, obs_res))
+            before_file = path.join(output_dir, 'before-{:05d}.jpg'.format(i))
+            plt.imsave(before_file, before)
 
-        shard_path = path.join('{:03d}-of-{:03d}'.format(shard_no, num_shards))
+            # after = maxpool_downsample(after, after.shape[1], obs_res)
+            after = opencv_downsample(after, (obs_res, obs_res))
+            after_file = path.join(output_dir, 'after-{:05d}.jpg'.format(i))
+            plt.imsave(after_file, after)
+            
+            act_serial[i] = u
 
-        if not path.exists(path.join(output_dir, shard_path)):
-            os.makedirs(path.join(output_dir, shard_path))
+        else:
+            obs_serial[i][0] = before_state
+            obs_serial[i][-1] = after_state
+            act_serial[i] = u
 
-        before_file = path.join(shard_path, 'before-{:05d}.jpg'.format(i))
-        plt.imsave(path.join(output_dir, before_file), before)
+    if obs_type == 'serial':
+        df = pd.DataFrame(
+            {'before': [list(obs_serial[i][0]) for i in range(sample_size)], 
+             'after': [list(obs_serial[i][-1]) for i in range(sample_size)], 
+             'action': [list(act_serial[i]) for i in range(sample_size)]
+             }
+        )
+    else:
+        df = pd.DataFrame({'action': [list(act_serial[i]) for i in range(sample_size)]})
+    
+    df_file_name = path.join(output_dir, 'dataframe.pkl')
+    df.to_pickle(df_file_name)
 
-        after_file = path.join(shard_path, 'after-{:05d}.jpg'.format(i))
-        plt.imsave(path.join(output_dir, after_file), after)
-
-        samples.append({
-            'before_state': initial_state.tolist(),
-            'after_state': after_state.tolist(),
-            'before': before_file,
-            'after': after_file,
-            'control': [u.tolist()],
-        })
-
-    with open(path.join(output_dir, 'data.json'), 'wt') as outfile:
-        json.dump(
-            {
-                'metadata': {
-                    'num_samples': sample_size,
-                    'step_size': step_size,
-                    'apply_control': apply_control,
-                    'time_created': str(datetime.now()),
-                    'version': 1
-                },
-                'samples': samples
-            }, outfile, indent=2)
+    print(f"SAMPLING DONE! DATA SAVED AS {obs_type.upper()}-TYPE IN: {output_dir}")
 
 def main(args):
     sample_size = args.sample_size
+    obs_type = args.obs_type
+    obs_res = args.obs_res
 
-    sample_hopper(sample_size=sample_size)
+    sample_hopper(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='sample data')
+    parser = argparse.ArgumentParser()
 
     parser.add_argument('--sample_size', required=True, type=int, help='the number of samples')
+    parser.add_argument('--obs_type', required=True, type=str, help='type of obs to be saved')
+    parser.add_argument('--obs_res', nargs='?', const=1, type=int)
 
     args = parser.parse_args()
 
