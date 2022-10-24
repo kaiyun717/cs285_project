@@ -179,6 +179,48 @@ class PendulumTransition(Transition):
         )
         super(PendulumTransition, self).__init__(net, z_dim, u_dim)
 
+# input should be (B*S, C, H, W) where B is batch, S is stack number, C is input channel, H == W
+class CNNEncoder(Encoder):
+    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=1):
+       
+        net = nn.Sequential(
+            nn.Conv2d(input_channel, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Unflatten(0, (-1, stack_num)),
+            nn.Flatten(start_dim=1, end_dim=-1), #(B, S, C, H, W)
+            nn.Linear(n_filters * (obs_dim//4//4//4), z_dim * 2)
+        )
+        super(CNNEncoder, self).__init__(net, obs_dim, z_dim)
+
+class CNNDecoder(Decoder):
+    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=1):
+        last_dim = obs_dim//stack_num//4//4//4
+        h = round(last_dim ** (1/2))
+        w = last_dim // h
+        net = nn.Sequential(
+            nn.Linear(z_dim, n_filters * stack_num * h * w),
+            nn.Unflatten(-1, (stack_num, n_filters, h, w)),
+            nn.Flatten(start_dim=0, end_dim=1),
+            nn.Upsample(scale_factor=2),
+            nn.ConvTranspose2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+            nn.ConvTranspose2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+            nn.ConvTranspose2d(n_filters, input_channel, 5, padding=2),
+            nn.Sigmoid()
+        )
+        super(CNNDecoder, self).__init__(net, z_dim, obs_dim)
+
+
 CONFIG = {
     'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
     'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition)

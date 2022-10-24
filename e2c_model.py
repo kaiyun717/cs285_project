@@ -2,13 +2,17 @@ from torch import nn
 
 from normal import *
 from networks import *
+import networks
 
 torch.set_default_dtype(torch.float64)
 
 class E2C(nn.Module):
-    def __init__(self, obs_dim, z_dim, u_dim, env = 'planar'):
+    def __init__(self, obs_dim, z_dim, u_dim, env = 'planar', use_cnn=False):
         super(E2C, self).__init__()
         enc, dec, trans = load_config(env)
+        if use_cnn:
+            enc = networks.CNNEncoder
+            dec = networks.CNNDecoder
 
         self.obs_dim = obs_dim
         self.z_dim = z_dim
