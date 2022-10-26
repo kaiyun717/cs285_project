@@ -21,8 +21,7 @@ else:
   device = torch.device("cpu")
 datasets = {'planar': PlanarDataset, 'pendulum': GymPendulumDatasetV2}
 settings = {'planar': (1600, 2, 2), 
-            'pendulum': (4608, 3, 1),
-            }
+            'pendulum': (4608, 3, 1)}
 samplers = {'planar': planar_sampler, 
             'pendulum': pendulum_sampler, 
             'cartpole': cartpole_sampler,
@@ -58,13 +57,22 @@ def train(model, train_loader, lam, optimizer):
 
     num_batches = len(train_loader)
     for i, (x, u, x_next) in enumerate(train_loader, 0):
-        x = x.view(-1, model.obs_dim).double().to(device)
+        if args.cnn:
+            x = x.double().to(device)
+            x_next = x_next.double().to(device)
+        else:
+            x = x.view(-1, model.obs_dim).double().to(device)
+            x_next = x_next.view(-1, model.obs_dim).double().to(device)
         u = u.double().to(device)
-        x_next = x_next.view(-1, model.obs_dim).double().to(device)
         optimizer.zero_grad()
 
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
 
+        if args.cnn:
+            x = x.view(-1, model.obs_dim)
+            x_next = x_next.view(-1, model.obs_dim)
+            x_recon = x_recon.view(-1, model.obs_dim)
+            x_next_pred = x_next_pred.view(-1, model.obs_dim)
         loss = compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lam)
 
         avg_loss += loss.item()
@@ -86,11 +94,20 @@ def evaluate(model, test_loader):
     state_loss, next_state_loss = 0., 0.
     with torch.no_grad():
         for x, u, x_next in test_loader:
-            x = x.view(-1, model.obs_dim).double().to(device)
+            if args.cnn:
+                x = x.double().to(device)
+                x_next = x_next.double().to(device)
+            else:
+                x = x.view(-1, model.obs_dim).double().to(device)
+                x_next = x_next.view(-1, model.obs_dim).double().to(device)
             u = u.double().to(device)
-            x_next = x_next.view(-1, model.obs_dim).double().to(device)
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
+            if args.cnn:
+                x = x.view(-1, model.obs_dim)
+                x_next = x_next.view(-1, model.obs_dim)
+                x_recon = x_recon.view(-1, model.obs_dim)
+                x_next_pred = x_next_pred.view(-1, model.obs_dim)
             loss_1, loss_2 = compute_log_likelihood(x, x_recon, x_next, x_next_pred)
             state_loss += loss_1
             next_state_loss += loss_2
@@ -152,12 +169,17 @@ def main(args):
     torch.manual_seed(seed)
 
     dataset = datasets[env_name]('./data/data/' + env_name)
+    print('data len', len(dataset))
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=8)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=8)
 
     obs_dim, z_dim, u_dim = settings[env_name]
-    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name).to(device)
+    if args.cnn:
+        z_dim = 512
+        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name, use_cnn=True).to(device)
+    else:
+        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name).to(device)
 
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), eps=1e-8, lr=lr, weight_decay=weight_decay)
 
@@ -210,6 +232,7 @@ if __name__ == "__main__":
     parser.add_argument('--iter_save', default=1000, type=int, help='save model and result after this number of iterations')
     parser.add_argument('--log_dir', required=True, type=str, help='the directory to save training log')
     parser.add_argument('--seed', required=True, type=int, help='seed number')
+    parser.add_argument('--cnn', action="store_true", help='use cnn as encoder and decoder')
 
     args = parser.parse_args()
 
