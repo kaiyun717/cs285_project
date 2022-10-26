@@ -1,13 +1,17 @@
 from tensorboardX import SummaryWriter
+import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import argparse
 import sys
+import numpy as np
 
-from normal import *
+import os
+import json
+from normal import NormalDistribution
 from e2c_model import E2C
-from datasets import *
+import datasets
 import data.sample_planar as planar_sampler
 import data.sample_pendulum_data as pendulum_sampler
 import data.sample_cartpole_data as cartpole_sampler
@@ -19,7 +23,9 @@ if torch.cuda.is_available():
   device = torch.device("cuda")
 else:
   device = torch.device("cpu")
-datasets = {'planar': PlanarDataset, 'pendulum': GymPendulumDatasetV2}
+datasets = {'planar': datasets.PlanarDataset, 
+            'pendulum': datasets.GymPendulumDatasetV2,
+            'hopper': datasets.MujocoDataset}
 settings = {'planar': (1600, 2, 2), 
             'pendulum': (4608, 3, 1)}
 samplers = {'planar': planar_sampler, 
@@ -153,8 +159,9 @@ def plot_preds(model, env, num_eval):
     return fig
 
 def main(args):
+    sample_path = args.sample_path
     env_name = args.env
-    assert env_name in ['planar', 'pendulum']
+    assert env_name in ['planar', 'pendulum', 'hopper']
     propor = args.propor
     batch_size = args.batch_size
     lr = args.lr
@@ -164,29 +171,44 @@ def main(args):
     iter_save = args.iter_save
     log_dir = args.log_dir
     seed = args.seed
+    stack = args.stack
+    # obs_type = args.obs_type
 
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    dataset = datasets[env_name]('./data/data/' + env_name)
-    print('data len', len(dataset))
+    if env_name not in ['planar', 'pendulum', 'cartpole']:
+        dataset = datasets[env_name](
+            dir='./data/data/' + env_name + '/' + sample_path,
+            stack=stack
+        )
+    else:
+        dataset = datasets[env_name](
+            dir='./data/data/' + env_name + '/' + sample_path,
+        )
+    
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=8)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=8)
 
+    # ##### Debugging ####
+    # return
+    # ####################
+
     obs_dim, z_dim, u_dim = settings[env_name]
+    
     if args.cnn:
         z_dim = 512
-        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name, use_cnn=True).to(device)
+        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name, stack=stack, use_cnn=True).to(device)
     else:
-        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name).to(device)
+        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name, stack=stack).to(device)
 
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), eps=1e-8, lr=lr, weight_decay=weight_decay)
 
     writer = SummaryWriter('logs/' + env_name + '/' + log_dir)
 
     result_path = './result/' + env_name + '/' + log_dir
-    if not path.exists(result_path):
+    if not os.path.exists(result_path):
         os.makedirs(result_path)
     with open(result_path + '/settings', 'w') as f:
         json.dump(args.__dict__, f, indent=2)
@@ -222,8 +244,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='train e2c model')
 
     # the default value is used for the planar task
+    parser.add_argument('--sample_path', required=True, type=str, help='the "sample-M_D_Y_hms" folder for samples')
     parser.add_argument('--env', required=True, type=str, help='the environment used for training')
-    parser.add_argument('--propor', default=3/4, type=float, help='the proportion of data used for training')
+    parser.add_argument('--propor', default=0.75, type=float, help='the proportion of data used for training')
     parser.add_argument('--batch_size', default=128, type=int, help='batch size')
     parser.add_argument('--lr', default=0.0005, type=float, help='the learning rate')
     parser.add_argument('--decay', default=0.001, type=float, help='the L2 regularization')
@@ -233,7 +256,9 @@ if __name__ == "__main__":
     parser.add_argument('--log_dir', required=True, type=str, help='the directory to save training log')
     parser.add_argument('--seed', required=True, type=int, help='seed number')
     parser.add_argument('--cnn', action="store_true", help='use cnn as encoder and decoder')
-
+    parser.add_argument('--stack', default=1, type=int, help='number of frames to stack when training')
+    # parser.add_argument('--encode_dim', required=True, type=int, help='encoded dimension (z-dim)')
+    # parser.add_argument('--obs_type', default='image', type=str, help='type of observation to use for ')
     args = parser.parse_args()
 
     main(args)

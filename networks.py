@@ -221,10 +221,23 @@ class CNNDecoder(Decoder):
         super(CNNDecoder, self).__init__(net, z_dim, obs_dim)
 
 
+class MujocoTransition(Transition):
+    def __init__(self, u_dim, z_dim=512):   # NOTE: order is different!
+        net = nn.Sequential(
+            nn.Linear(z_dim, 100),
+            nn.BatchNorm1d(100),
+            nn.ReLU(),
+
+            nn.Linear(100, 100),
+            nn.BatchNorm1d(100),
+            nn.ReLU()
+        )
+        super().__init__(net, z_dim, u_dim)
+
 CONFIG = {
     'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
     'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition),
-    'hopper': (HopperEncoder, HopperDecoder, HopperTransition)
+    'hopper': (CNNEncoder, CNNDecoder, MujocoTransition)
 }
 
 def load_config(name):
