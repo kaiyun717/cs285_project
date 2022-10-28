@@ -23,6 +23,8 @@ class PlanarDataset(Dataset):
             self._data = json.load(f)
         self._process()
 
+        self.obs_image = True
+
     def __len__(self):
         return len(self._data['samples'])
 
@@ -54,6 +56,10 @@ class PlanarDataset(Dataset):
             with open(preprocessed_file, 'rb') as f:
                 self._processed = pickle.load(f)
 
+    def return_obs_image(self) -> bool:
+        return self.obs_image
+
+
 class GymPendulumDatasetV2(Dataset):
     width = 48 * 2
     height = 48
@@ -64,6 +70,8 @@ class GymPendulumDatasetV2(Dataset):
         with open(path.join(dir, 'data.json')) as f:
             self._data = json.load(f)
         self._process()
+
+        self.obs_image = True
 
     def __len__(self):
         return len(self._data['samples'])
@@ -95,13 +103,21 @@ class GymPendulumDatasetV2(Dataset):
         else:
             with open(preprocessed_file, 'rb') as f:
                 self._processed = pickle.load(f)
+    
+    def return_obs_image(self) -> bool:
+        return self.obs_image
 
 
 class MujocoDataset(Dataset):
 
     def __init__(self, dir, stack=1):
+        """
+        dir: 
+        stack (int): For image obs, stack != 1. 
+                    For serial obs, stack = 1, i.e., 'processed_1.pkl'
+        """
         self.dir = dir
-        self.stack = stack  # NOTE: not sure if we need this here
+        self.stack = stack  # NOTE: yes we do
         self.dataframe: pd.DataFrame = pd.read_pickle(dir + '/dataframe.pkl')
         
         # Determine obs type : image or serial
@@ -111,9 +127,10 @@ class MujocoDataset(Dataset):
                 self.obs_image = True      # Image
                 break
         
-        # print(self.dataframe)
-        # print(self.obs_image)
-        # print(self.dataframe.loc[2, 'before'])  # method for indexing pd.Datframe
+        if self.obs_image:
+            assert stack != 1, "For image obs, you need to stack states."
+        else:
+            assert stack == 1, "For serial obs, you cannot stack states."
 
         self._processed = []
         self._process()
@@ -126,10 +143,16 @@ class MujocoDataset(Dataset):
 
     @staticmethod
     def _process_image(img):
-        return ToTensor()((img.convert('L')))   # No need for resizing!
-                                                # Downsampling happens when collecting.
+        processed_img = ToTensor()((img.convert('L')))
+        
+        # print("Processed Image: ")
+        # print(processed_img.shape)
+
+        return processed_img   # No need for resizing!
+                               # Downsampling happens when collecting.
     def _process(self):
-        preprocessed_file = os.path.join(self.dir, 'processed.pkl')
+        file_name = 'processed_{}.pkl'.format(str(self.stack))
+        preprocessed_file = os.path.join(self.dir, file_name)
         if not os.path.exists(preprocessed_file):
             if self.obs_image:
                 processed: list = self._process_obs_image()
@@ -145,14 +168,37 @@ class MujocoDataset(Dataset):
 
     def _process_obs_image(self) -> list:
         processed = []
-        for i in trange(len(self), desc='processing image data'):
-            img_num = str(i).zfill(5)
-            before = Image.open(os.path.join(self.dir, f'before-{img_num}.jpg'))
-            after = Image.open(os.path.join(self.dir, f'after-{img_num}.jpg'))
+        print(self.stack)
+        print(len(self))
+        for i in trange(self.stack-1, len(self), 
+                        desc='processing image data'):
 
-            processed.append((self._process_image(before),
+            before = []
+            after = []
+            for t in reversed(range(self.stack)):
+                # i = 3
+                # t = 3,2,1,0
+                # --> i - t = 0, 1, 2, 3
+                # --> i - t + 1 = 1, 2, 3, 4 (NOPE)
+
+                # len = 100
+                # i = 96, 97, 98, 99 
+                b_idx = i - t       # before
+                # a_idx = i - t + 1   # after
+                temp_before = Image.open(os.path.join(self.dir, 
+                                            f'before-{str(b_idx).zfill(5)}.jpg'))
+                temp_after = Image.open(os.path.join(self.dir, 
+                                            f'after-{str(b_idx).zfill(5)}.jpg'))
+                before.append(self._process_image(temp_before))
+                after.append(self._process_image(temp_after))
+
+            # img_num = str(i).zfill(5)
+            # before = Image.open(os.path.join(self.dir, f'before-{img_num}.jpg'))
+            # after = Image.open(os.path.join(self.dir, f'after-{img_num}.jpg'))
+
+            processed.append((torch.cat(tuple(before)),
                               np.array(self.dataframe.loc[i, 'action']),
-                              self._process_image(after)))
+                              torch.cat(tuple(after))))
         return processed
 
     def _process_obs_serial(self) -> list:
@@ -165,4 +211,7 @@ class MujocoDataset(Dataset):
             processed.append((before, control, after))
 
         return processed
+    
+    def return_obs_image(self) -> bool:
+        return self.obs_image
 

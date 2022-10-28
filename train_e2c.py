@@ -26,8 +26,11 @@ else:
 datasets = {'planar': datasets.PlanarDataset, 
             'pendulum': datasets.GymPendulumDatasetV2,
             'hopper': datasets.MujocoDataset}
-settings = {'planar': (1600, 2, 2), 
-            'pendulum': (4608, 3, 1)}
+settings = {'planar': {'image': (1600, 2, 2), },
+            'pendulum': {'image': (4608, 3, 1), },
+            'hopper': {'image': (64*64, 512, 3),
+                       'serial': (11, 2, 3)}
+            }
 samplers = {'planar': planar_sampler, 
             'pendulum': pendulum_sampler, 
             'cartpole': cartpole_sampler,
@@ -62,13 +65,24 @@ def train(model, train_loader, lam, optimizer):
     avg_loss = 0.0
 
     num_batches = len(train_loader)
-    for i, (x, u, x_next) in enumerate(train_loader, 0):
+
+    print("Number of batches: ", num_batches)   # debug
+    print(train_loader.batch_size)
+
+    for _, (x, u, x_next) in enumerate(train_loader, 0):
+        # x: 'before' obs in batch (num_batch, obs_dim)
+        # u: 'action' in batch (num_batch, action)
+        # x_next: 'after' obs in batch (num_batch, obs_dim)
+        
+
+
         if args.cnn:
             x = x.double().to(device)
             x_next = x_next.double().to(device)
         else:
             x = x.view(-1, model.obs_dim).double().to(device)
             x_next = x_next.view(-1, model.obs_dim).double().to(device)
+            
         u = u.double().to(device)
         optimizer.zero_grad()
 
@@ -79,7 +93,18 @@ def train(model, train_loader, lam, optimizer):
             x_next = x_next.view(-1, model.obs_dim)
             x_recon = x_recon.view(-1, model.obs_dim)
             x_next_pred = x_next_pred.view(-1, model.obs_dim)
-        loss = compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lam)
+            # NOTE: what is this?
+
+        loss = compute_loss(
+                    x=x,                            # 'before' obs
+                    x_next=x_next,                  # 'after' obs
+                    q_z_next=q_z_next,              # q(z_next|x_next) distrubtion
+                    x_recon=x_recon,                # decoded(z)
+                    x_next_pred=x_next_pred,        # decoded(z_next)
+                    q_z=q_z,                        # q(z|x) distribution
+                    q_z_next_pred=q_z_next_pred,    # transition in latent space
+                    lamda=lam                         
+                )
 
         avg_loss += loss.item()
         loss.backward()
@@ -171,8 +196,7 @@ def main(args):
     iter_save = args.iter_save
     log_dir = args.log_dir
     seed = args.seed
-    stack = args.stack
-    # obs_type = args.obs_type
+    stack = args.stack 
 
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -194,8 +218,16 @@ def main(args):
     # ##### Debugging ####
     # return
     # ####################
+    if dataset.return_obs_image():  # True if observation is images
+        obs_type = 'image'
+    else:
+        obs_type = 'serial'
 
-    obs_dim, z_dim, u_dim = settings[env_name]
+    obs_dim, z_dim, u_dim = settings[env_name][obs_type]
+    
+    if obs_type == 'serial':
+        obs_dim = obs_dim * stack   # NOTE: for serial
+        u_dim = u_dim * stack       # NOTE: for serial (???)
     
     if args.cnn:
         z_dim = 512

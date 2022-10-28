@@ -20,6 +20,7 @@ class E2C(nn.Module):
         self.obs_dim = obs_dim
         self.z_dim = z_dim
         self.u_dim = u_dim
+        self.stack = stack
 
         self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim)
         # self.encoder.apply(init_weights)

@@ -114,8 +114,9 @@ def main(args):
     sample_size = args.sample_size
     obs_type = args.obs_type
     obs_res = args.obs_res
+    step_size= args.step_size
 
-    sample_hopper(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res)
+    sample_hopper(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res, step_size=step_size)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -123,6 +124,7 @@ if __name__ == "__main__":
     parser.add_argument('--sample_size', required=True, type=int, help='the number of samples')
     parser.add_argument('--obs_type', required=True, type=str, help='type of obs to be saved')
     parser.add_argument('--obs_res', nargs='?', const=1, type=int)
+    parser.add_argument('--step_size', default=4, type=int)
 
     args = parser.parse_args()
 

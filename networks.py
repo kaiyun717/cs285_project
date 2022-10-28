@@ -179,8 +179,15 @@ class PendulumTransition(Transition):
         )
         super(PendulumTransition, self).__init__(net, z_dim, u_dim)
 
-# input should be (B*S, C, H, W) where B is batch, S is stack number, C is input channel, H == W
+################ IMAGE OBSERVATION ################
 class CNNEncoder(Encoder):
+    """ 
+    input should be (B*S, C, H, W) 
+    - B is batch, 
+    - S is stack number, 
+    - C is input channel, 
+    - H == W
+    """
     def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=1):
        
         net = nn.Sequential(
@@ -198,6 +205,7 @@ class CNNEncoder(Encoder):
             nn.Linear(n_filters * (obs_dim//4//4//4), z_dim * 2)
         )
         super(CNNEncoder, self).__init__(net, obs_dim, z_dim)
+
 
 class CNNDecoder(Decoder):
     def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=1):
@@ -220,7 +228,45 @@ class CNNDecoder(Decoder):
         )
         super(CNNDecoder, self).__init__(net, z_dim, obs_dim)
 
+################ SERIAL OBSERVATION ################
+class SerialEncoder(Encoder):
+    """ 
+    input should be (B, O*S) 
+    - B is batch, 
+    - S is stack number, 
+    - O is observation size
+    """
+    def __init__(self, obs_dim = 4608, z_dim = 3):
+        net = nn.Sequential(
+            nn.Linear(obs_dim, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
 
+            nn.Linear(800, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, z_dim * 2)
+        )
+        super(SerialEncoder, self).__init__(net, obs_dim, z_dim)
+
+
+class SerialDecoder(Decoder):
+    def __init__(self, z_dim = 3, obs_dim = 4608):
+        net = nn.Sequential(
+            nn.Linear(z_dim, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, obs_dim)
+        )
+        super(SerialDecoder, self).__init__(net, z_dim, obs_dim)
+
+################ MUJOCO TRANSITION ################
 class MujocoTransition(Transition):
     def __init__(self, u_dim, z_dim=512):   # NOTE: order is different!
         net = nn.Sequential(
@@ -237,7 +283,8 @@ class MujocoTransition(Transition):
 CONFIG = {
     'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
     'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition),
-    'hopper': (CNNEncoder, CNNDecoder, MujocoTransition)
+    # 'hopper': (CNNEncoder, CNNDecoder, MujocoTransition),
+    'hopper': (SerialEncoder, SerialDecoder, MujocoTransition)
 }
 
 def load_config(name):
