@@ -179,7 +179,6 @@ class MujocoDataset(Dataset):
                 # i = 3
                 # t = 3,2,1,0
                 # --> i - t = 0, 1, 2, 3
-                # --> i - t + 1 = 1, 2, 3, 4 (NOPE)
 
                 # len = 100
                 # i = 96, 97, 98, 99 

@@ -26,24 +26,17 @@ else:
 datasets = {'planar': datasets.PlanarDataset, 
             'pendulum': datasets.GymPendulumDatasetV2,
             'hopper': datasets.MujocoDataset}
-settings = {'planar': {'image': (1600, 2, 2), },
-            'pendulum': {'image': (4608, 3, 1), },
-            'hopper': {'image': (64*64, 512, 3),
-                       'serial': (11, 2, 3)}
+                                  # obs,  z,   u
+settings = {'planar':   {'image': (1600,  2,   2) },
+            'pendulum': {'image': (4608,  3,   1) },
+            'hopper':   {'image': (64*64, 512, 3),
+                        'serial': (11,    2,   3) },
             }
 samplers = {'planar': planar_sampler, 
             'pendulum': pendulum_sampler, 
             'cartpole': cartpole_sampler,
             'hopper': hopper_sampler}
 num_eval = 10 # number of images evaluated on tensorboard
-
-# dataset = datasets['planar']('./data/data/' + 'planar')
-# x, u, x_next = dataset[0]
-# imgplot = plt.imshow(x.squeeze(), cmap='gray')
-# plt.show()
-# print (np.array(u, dtype=float))
-# imgplot = plt.imshow(x_next.squeeze(), cmap='gray')
-# plt.show()
 
 def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda):
     # lower-bound loss
@@ -70,12 +63,10 @@ def train(model, train_loader, lam, optimizer):
     print(train_loader.batch_size)
 
     for _, (x, u, x_next) in enumerate(train_loader, 0):
-        # x: 'before' obs in batch (num_batch, obs_dim)
+        # x: 'before' obs in batch & stack (num_batch, obs_dim)
         # u: 'action' in batch (num_batch, action)
         # x_next: 'after' obs in batch (num_batch, obs_dim)
         
-
-
         if args.cnn:
             x = x.double().to(device)
             x_next = x_next.double().to(device)
@@ -194,14 +185,14 @@ def main(args):
     lam = args.lam
     epoches = args.num_iter
     iter_save = args.iter_save
-    log_dir = args.log_dir
+    exp_name = args.log_dir
     seed = args.seed
     stack = args.stack 
 
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    if env_name not in ['planar', 'pendulum', 'cartpole']:
+    if env_name not in ['planar', 'pendulum', 'cartpole']:  # MuJoCo Datasets
         dataset = datasets[env_name](
             dir='./data/data/' + env_name + '/' + sample_path,
             stack=stack
@@ -212,8 +203,10 @@ def main(args):
         )
     
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=8)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=8)
+    train_loader = DataLoader(train_set, batch_size=batch_size, 
+                              shuffle=True, drop_last=False, num_workers=8)
+    test_loader = DataLoader(test_set, batch_size=batch_size, 
+                              shuffle=False, drop_last=False, num_workers=8)
 
     # ##### Debugging ####
     # return
@@ -225,25 +218,23 @@ def main(args):
 
     obs_dim, z_dim, u_dim = settings[env_name][obs_type]
     
-    if obs_type == 'serial':
-        obs_dim = obs_dim * stack   # NOTE: for serial
-        u_dim = u_dim * stack       # NOTE: for serial (???)
-    
-    if args.cnn:
-        z_dim = 512
-        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name, stack=stack, use_cnn=True).to(device)
-    else:
-        model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name, stack=stack).to(device)
+    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, 
+                env=env_name, stack=stack, use_cnn=args.cnn).to(device)
 
-    optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), eps=1e-8, lr=lr, weight_decay=weight_decay)
+    optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
+                           eps=1e-8, lr=lr, weight_decay=weight_decay)
 
-    writer = SummaryWriter('logs/' + env_name + '/' + log_dir)
+    writer = SummaryWriter('logs/' + env_name + '/' + exp_name)
 
-    result_path = './result/' + env_name + '/' + log_dir
+    result_path = './result/' + env_name + '/' + exp_name
     if not os.path.exists(result_path):
         os.makedirs(result_path)
-    with open(result_path + '/settings', 'w') as f:
-        json.dump(args.__dict__, f, indent=2)
+    with open(result_path + '/hyperparameters.json', 'w') as f:
+        hparameter = {
+            **args.__dict__,
+            **{'obs_dim': obs_dim, 'z_dim': z_dim, 'u_dim': u_dim}              
+        }
+        json.dump(hparameter, f, indent=2)
 
     for i in range(epoches):
         avg_loss = train(model, train_loader, lam, optimizer)
@@ -276,21 +267,32 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='train e2c model')
 
     # the default value is used for the planar task
-    parser.add_argument('--sample_path', required=True, type=str, help='the "sample-M_D_Y_hms" folder for samples')
-    parser.add_argument('--env', required=True, type=str, help='the environment used for training')
-    parser.add_argument('--propor', default=0.75, type=float, help='the proportion of data used for training')
-    parser.add_argument('--batch_size', default=128, type=int, help='batch size')
-    parser.add_argument('--lr', default=0.0005, type=float, help='the learning rate')
-    parser.add_argument('--decay', default=0.001, type=float, help='the L2 regularization')
-    parser.add_argument('--lam', default=0.25, type=float, help='the weight of the consistency term')
-    parser.add_argument('--num_iter', default=5000, type=int, help='the number of epoches')
-    parser.add_argument('--iter_save', default=1000, type=int, help='save model and result after this number of iterations')
-    parser.add_argument('--log_dir', required=True, type=str, help='the directory to save training log')
-    parser.add_argument('--seed', required=True, type=int, help='seed number')
-    parser.add_argument('--cnn', action="store_true", help='use cnn as encoder and decoder')
-    parser.add_argument('--stack', default=1, type=int, help='number of frames to stack when training')
-    # parser.add_argument('--encode_dim', required=True, type=int, help='encoded dimension (z-dim)')
-    # parser.add_argument('--obs_type', default='image', type=str, help='type of observation to use for ')
+    parser.add_argument('--sample_path', required=True, type=str, 
+                        help='the "sample-M_D_Y_hms" folder for samples')
+    parser.add_argument('--env', required=True, type=str, 
+                        help='the environment used for training')
+    parser.add_argument('--propor', default=0.75, type=float, 
+                        help='the proportion of data used for training')
+    parser.add_argument('--batch_size', default=128, type=int, 
+                        help='batch size')
+    parser.add_argument('--lr', default=0.0005, type=float, 
+                        help='the learning rate')
+    parser.add_argument('--decay', default=0.001, type=float, 
+                        help='the L2 regularization')
+    parser.add_argument('--lam', default=0.25, type=float, 
+                        help='the weight of the consistency term')
+    parser.add_argument('--num_iter', default=5000, type=int, 
+                        help='the number of epoches')
+    parser.add_argument('--iter_save', default=1000, type=int, 
+                        help='save model and result after this number of iterations')
+    parser.add_argument('--log_dir', required=True, type=str, 
+                        help='the directory to save training log (in `logs/env/log_dir`)')
+    parser.add_argument('--seed', required=True, type=int, 
+                        help='seed number')
+    parser.add_argument('--cnn', action="store_true", 
+                        help='use cnn as encoder and decoder')
+    parser.add_argument('--stack', default=1, type=int, 
+                        help='number of frames to stack when training')
     args = parser.parse_args()
 
     main(args)
