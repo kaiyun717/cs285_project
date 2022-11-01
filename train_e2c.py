@@ -1,6 +1,7 @@
 from tensorboardX import SummaryWriter
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import argparse
@@ -29,7 +30,7 @@ datasets = {'planar': datasets.PlanarDataset,
                                   # obs,  z,   u
 settings = {'planar':   {'image': (1600,  2,   2) },
             'pendulum': {'image': (4608,  3,   1) },
-            'hopper':   {'image': (64*64, 512, 3),
+            'hopper':   {'image': (64*64*4, 512, 3),
                         'serial': (11,    2,   3) },
             }
 samplers = {'planar': planar_sampler, 
@@ -38,11 +39,15 @@ samplers = {'planar': planar_sampler,
             'hopper': hopper_sampler}
 num_eval = 10 # number of images evaluated on tensorboard
 
-def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda):
+def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda, mse=False):
     # lower-bound loss
-    recon_term = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
-                                       + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
-    pred_loss = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
+    if mse:
+        recon_term = F.mse_loss(x_recon, x)
+        pred_loss = F.mse_loss(x_next_pred, x_next)
+    else:
+        recon_term = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
+                                          + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
+        pred_loss = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
                                       + (1 - x_next) * torch.log(1e-5 + 1 - x_next_pred), dim=1))
 
     kl_term = - 0.5 * torch.mean(torch.sum(1 + q_z.logvar - q_z.mean.pow(2) - q_z.logvar.exp(), dim = 1))
@@ -94,7 +99,8 @@ def train(model, train_loader, lam, optimizer):
                     x_next_pred=x_next_pred,        # decoded(z_next)
                     q_z=q_z,                        # q(z|x) distribution
                     q_z_next_pred=q_z_next_pred,    # transition in latent space
-                    lamda=lam                         
+                    lamda=lam,
+                    mse=args.cnn                         
                 )
 
         avg_loss += loss.item()
@@ -103,10 +109,14 @@ def train(model, train_loader, lam, optimizer):
 
     return avg_loss / num_batches
 
-def compute_log_likelihood(x, x_recon, x_next, x_next_pred):
-    loss_1 = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
-                                   + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
-    loss_2 = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
+def compute_log_likelihood(x, x_recon, x_next, x_next_pred, mse=False):
+    if mse:
+        loss_1 = F.mse_loss(x_recon, x)
+        loss_2 = F.mse_loss(x_next_pred, x_next)
+    else:
+        loss_1 = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
+                                      + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
+        loss_2 = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
                                    + (1 - x_next) * torch.log(1e-5 + 1 - x_next_pred), dim=1))
     return loss_1, loss_2
 
@@ -130,7 +140,7 @@ def evaluate(model, test_loader):
                 x_next = x_next.view(-1, model.obs_dim)
                 x_recon = x_recon.view(-1, model.obs_dim)
                 x_next_pred = x_next_pred.view(-1, model.obs_dim)
-            loss_1, loss_2 = compute_log_likelihood(x, x_recon, x_next, x_next_pred)
+            loss_1, loss_2 = compute_log_likelihood(x, x_recon, x_next, x_next_pred, mse=args.cnn)
             state_loss += loss_1
             next_state_loss += loss_2
 
