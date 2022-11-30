@@ -78,12 +78,10 @@ def sample_hopper(sample_size,
         after = env.render(mode='rgb_array')
 
         if obs_type == 'image': 
-            # before = maxpool_downsample(before, before.shape[1], obs_res)
             before = opencv_downsample(before, (obs_res, obs_res))
             before_file = path.join(output_dir, 'before-{:05d}.jpg'.format(i))
             plt.imsave(before_file, before)
 
-            # after = maxpool_downsample(after, after.shape[1], obs_res)
             after = opencv_downsample(after, (obs_res, obs_res))
             after_file = path.join(output_dir, 'after-{:05d}.jpg'.format(i))
             plt.imsave(after_file, after)
