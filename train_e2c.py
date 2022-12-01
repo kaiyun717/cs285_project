@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import argparse
 import sys
 import numpy as np
+from utils import pytorch_utils as ptu
 
 import os
 import json
@@ -20,18 +21,19 @@ import data.sample_hopper_data as hopper_sampler
 
 torch.set_default_dtype(torch.float64)
 
-if torch.cuda.is_available():
-  device = torch.device("cuda")
-else:
-  device = torch.device("cpu")
+# if torch.cuda.is_available():
+#   device = torch.device("cuda")
+# else:
+#   device = torch.device("cpu")
+
 datasets = {'planar': datasets.PlanarDataset, 
             'pendulum': datasets.GymPendulumDatasetV2,
             'hopper': datasets.MujocoDataset}
                                   # obs,  z,   u
-settings = {'planar':   {'image': (1600,  2,   2) },
-            'pendulum': {'image': (4608,  3,   1) },
+settings = {'planar':   {'image': (1600,    2,   2) },
+            'pendulum': {'image': (4608,    3,   1) },
             'hopper':   {'image': (64*64*4, 512, 3),
-                        'serial': (11,    2,   3) },
+                        'serial': (11,      2,   3) },
             }
 samplers = {'planar': planar_sampler, 
             'pendulum': pendulum_sampler, 
@@ -65,7 +67,7 @@ def train(model, train_loader, lam, optimizer):
     num_batches = len(train_loader)
 
     print("Number of batches: ", num_batches)   # debug
-    print(train_loader.batch_size)
+    print("Train Loader `batch_size`: ", train_loader.batch_size)
 
     for _, (x, u, x_next) in enumerate(train_loader, 0):
         # x: 'before' obs in batch & stack (num_batch, obs_dim)
@@ -73,13 +75,13 @@ def train(model, train_loader, lam, optimizer):
         # x_next: 'after' obs in batch (num_batch, obs_dim)
         
         if args.cnn:
-            x = x.double().to(device)
-            x_next = x_next.double().to(device)
+            x = x.double().to(ptu.device)
+            x_next = x_next.double().to(ptu.device)
         else:
-            x = x.view(-1, model.obs_dim).double().to(device)
-            x_next = x_next.view(-1, model.obs_dim).double().to(device)
+            x = x.view(-1, model.obs_dim).double().to(ptu.device)
+            x_next = x_next.view(-1, model.obs_dim).double().to(ptu.device)
             
-        u = u.double().to(device)
+        u = u.double().to(ptu.device)
         optimizer.zero_grad()
 
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
@@ -127,12 +129,12 @@ def evaluate(model, test_loader):
     with torch.no_grad():
         for x, u, x_next in test_loader:
             if args.cnn:
-                x = x.double().to(device)
-                x_next = x_next.double().to(device)
+                x = x.double().to(ptu.device)
+                x_next = x_next.double().to(ptu.device)
             else:
-                x = x.view(-1, model.obs_dim).double().to(device)
-                x_next = x_next.view(-1, model.obs_dim).double().to(device)
-            u = u.double().to(device)
+                x = x.view(-1, model.obs_dim).double().to(ptu.device)
+                x_next = x_next.view(-1, model.obs_dim).double().to(ptu.device)
+            u = u.double().to(ptu.device)
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
             if args.cnn:
@@ -156,8 +158,8 @@ def predict_x_next(model, env, num_eval):
     predicted = []
     for x, u, x_next in sampled_data:
         x_reshaped = x.reshape(-1)
-        x_reshaped = torch.from_numpy(x_reshaped).double().unsqueeze(dim=0).to(device)
-        u = torch.from_numpy(u).double().unsqueeze(dim=0).to(device)
+        x_reshaped = torch.from_numpy(x_reshaped).double().unsqueeze(dim=0).to(ptu.device)
+        u = torch.from_numpy(u).double().unsqueeze(dim=0).to(ptu.device)
         with torch.no_grad():
             x_next_pred = model.predict(x_reshaped, u)
         predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(sampler.width, sampler.height))
@@ -201,6 +203,7 @@ def main(args):
 
     np.random.seed(seed)
     torch.manual_seed(seed)
+    ptu.init_gpu(use_gpu=args.gpu)
 
     if env_name not in ['planar', 'pendulum', 'cartpole']:  # MuJoCo Datasets
         dataset = datasets[env_name](
@@ -229,7 +232,7 @@ def main(args):
     obs_dim, z_dim, u_dim = settings[env_name][obs_type]
     
     model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, 
-                env=env_name, stack=stack, use_cnn=args.cnn).to(device)
+                env=env_name, stack=stack, use_cnn=args.cnn).to(ptu.device)
 
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
                            eps=1e-8, lr=lr, weight_decay=weight_decay)
@@ -303,6 +306,9 @@ if __name__ == "__main__":
                         help='use cnn as encoder and decoder')
     parser.add_argument('--stack', default=1, type=int, 
                         help='number of frames to stack when training')
+    parser.add_argument('--gpu', action="store_true",
+                        help='use gpu if available')
+    
     args = parser.parse_args()
 
     main(args)

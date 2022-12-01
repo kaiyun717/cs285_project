@@ -188,8 +188,12 @@ class CNNEncoder(Encoder):
     - C is input channel, 
     - H == W
     """
-    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=1):
-       
+    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=4):
+        #### DEBUG ####
+        print('obs_dim: ', obs_dim)
+        print('input_channel: ', input_channel)
+        ###############
+
         net = nn.Sequential(
             nn.Conv2d(input_channel*stack_num, n_filters, 5, padding=2),
             nn.ReLU(),
