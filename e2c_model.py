@@ -22,9 +22,9 @@ class E2C(nn.Module):
         self.u_dim = u_dim
         self.stack = stack
 
-        self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim)
+        self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim, stack_num=self.stack)
         # self.encoder.apply(init_weights)
-        self.decoder = dec(z_dim=z_dim, obs_dim=obs_dim)
+        self.decoder = dec(z_dim=z_dim, obs_dim=obs_dim, stack_num=self.stack)
         # self.decoder.apply(init_weights)
         self.trans = trans(z_dim=z_dim, u_dim=u_dim)
         # self.trans.apply(init_weights)

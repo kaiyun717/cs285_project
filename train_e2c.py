@@ -27,12 +27,12 @@ torch.set_default_dtype(torch.float64)
 #   device = torch.device("cpu")
 
 datasets = {'planar': datasets.PlanarDataset, 
-            'pendulum': datasets.GymPendulumDatasetV2,
+            'pendulum': datasets.MujocoDataset,
             'hopper': datasets.MujocoDataset}
                                   # obs,  z,   u
 settings = {'planar':   {'image': (1600,    2,   2) },
-            'pendulum': {'image': (4608,    3,   1) },
-            'hopper':   {'image': (64*64*2, 512, 3),
+            'pendulum': {'image': (48*48,   3,   1) },
+            'hopper':   {'image': (64*64, 512,   3),
                         'serial': (11,      2,   3) },
             }
 samplers = {'planar': planar_sampler, 
@@ -69,7 +69,7 @@ def train(model, train_loader, lam, optimizer):
     print("Number of batches: ", num_batches)   # debug
     print("Train Loader `batch_size`: ", train_loader.batch_size)
 
-    for _, (x, u, x_next) in enumerate(train_loader, 0):
+    for _, (x, u, x_next, reward) in enumerate(train_loader, 0):
         # x: 'before' obs in batch & stack (num_batch, obs_dim)
         # u: 'action' in batch (num_batch, action)
         # x_next: 'after' obs in batch (num_batch, obs_dim)
@@ -205,14 +205,14 @@ def main(args):
     torch.manual_seed(seed)
     ptu.init_gpu(use_gpu=args.gpu)
 
-    if env_name not in ['planar', 'pendulum', 'cartpole']:  # MuJoCo Datasets
+    if env_name not in ['planar', 'cartpole']:  # MuJoCo Datasets & Pendulum
         dataset = datasets[env_name](
-            dir='./data/data/' + env_name + '/' + sample_path,
+            dir='./data/samples/' + env_name + '/' + sample_path,
             stack=stack
         )
     else:
         dataset = datasets[env_name](
-            dir='./data/data/' + env_name + '/' + sample_path,
+            dir='./data/samples/' + env_name + '/' + sample_path,
         )
     
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
@@ -230,6 +230,7 @@ def main(args):
         obs_type = 'serial'
 
     obs_dim, z_dim, u_dim = settings[env_name][obs_type]
+    obs_dim = obs_dim * stack
     
     model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, 
                 env=env_name, stack=stack, use_cnn=args.cnn).to(ptu.device)
@@ -259,9 +260,9 @@ def main(args):
         print('Next state loss: ' + str(next_state_loss))
 
         # ...log the running loss
-        writer.add_scalar('training loss', avg_loss, i)
-        writer.add_scalar('state loss', state_loss, i)
-        writer.add_scalar('next state loss', next_state_loss, i)
+        writer.add_scalar('training_loss', avg_loss, i)
+        writer.add_scalar('state_loss', state_loss, i)
+        writer.add_scalar('next_state_loss', next_state_loss, i)
 
         # save model
         if (i + 1) % iter_save == 0:

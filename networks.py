@@ -87,7 +87,7 @@ class Transition(nn.Module):
         return mean, NormalDistribution(mean, logvar=q_z_t.logvar, v=v_t.squeeze(), r=r_t.squeeze(), A=A_t)
 
 class PlanarEncoder(Encoder):
-    def __init__(self, obs_dim = 1600, z_dim = 2):
+    def __init__(self, obs_dim = 1600, z_dim = 2, stack_num=1):
         net = nn.Sequential(
             nn.Linear(obs_dim, 150),
             nn.BatchNorm1d(150),
@@ -106,7 +106,7 @@ class PlanarEncoder(Encoder):
         super(PlanarEncoder, self).__init__(net, obs_dim, z_dim)
 
 class PlanarDecoder(Decoder):
-    def __init__(self, z_dim = 2, obs_dim = 1600):
+    def __init__(self, z_dim = 2, obs_dim = 1600, stack_num=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 200),
             nn.BatchNorm1d(200),
@@ -135,7 +135,7 @@ class PlanarTransition(Transition):
         super(PlanarTransition, self).__init__(net, z_dim, u_dim)
 
 class PendulumEncoder(Encoder):
-    def __init__(self, obs_dim = 4608, z_dim = 3):
+    def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
         net = nn.Sequential(
             nn.Linear(obs_dim, 800),
             nn.BatchNorm1d(800),
@@ -150,7 +150,7 @@ class PendulumEncoder(Encoder):
         super(PendulumEncoder, self).__init__(net, obs_dim, z_dim)
 
 class PendulumDecoder(Decoder):
-    def __init__(self, z_dim = 3, obs_dim = 4608):
+    def __init__(self, z_dim = 3, obs_dim = 4608, stack_num=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 800),
             nn.BatchNorm1d(800),
@@ -186,7 +186,7 @@ class CNNEncoder(Encoder):
     - C is input channel, 
     - H == W
     """
-    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=2):
+    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=4):
         #### DEBUG ####
         print('obs_dim: ', obs_dim)
         print('input_channel: ', input_channel)
@@ -210,7 +210,7 @@ class CNNEncoder(Encoder):
 
 
 class CNNDecoder(Decoder):
-    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=2):
+    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=4):
         last_dim = obs_dim//stack_num//4//4//4
         h = round(last_dim ** (1/2))
         w = last_dim // h
@@ -238,7 +238,7 @@ class SerialEncoder(Encoder):
     - S is stack number, 
     - O is observation size
     """
-    def __init__(self, obs_dim = 4608, z_dim = 3):
+    def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
         net = nn.Sequential(
             nn.Linear(obs_dim, 800),
             nn.BatchNorm1d(800),
@@ -254,7 +254,7 @@ class SerialEncoder(Encoder):
 
 
 class SerialDecoder(Decoder):
-    def __init__(self, z_dim = 3, obs_dim = 4608):
+    def __init__(self, z_dim = 3, obs_dim = 4608, stack_num=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 800),
             nn.BatchNorm1d(800),
@@ -285,7 +285,6 @@ class MujocoTransition(Transition):
 CONFIG = {
     'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
     'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition),
-    # 'hopper': (CNNEncoder, CNNDecoder, MujocoTransition),
     'hopper': (SerialEncoder, SerialDecoder, MujocoTransition)
 }
 

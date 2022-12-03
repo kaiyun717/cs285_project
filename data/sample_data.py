@@ -223,9 +223,6 @@ def main(args):
 
         sample_pendulum(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res, step_size=step_size)
 
-    elif env == 'Planar':
-        sample_planar(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res, step_size=step_size)
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
