@@ -12,10 +12,18 @@ for env in env_dict:
     if 'Hopper-v4-uniform' in env:
         print("Remove {} from registry".format(env))
         del gym.envs.registration.registry.env_specs[env]
+    if 'Pendulum-v1-uniform' in env:
+        print("Remove {} from registry".format(env))
+        del gym.envs.registration.registry.env_specs[env]
 
 register(
     id='Hopper-v4-uniform',
     entry_point='data.env.hopper_v4_uniform:HopperEnvUniform',
     max_episode_steps=1000,
     reward_threshold=3800.0,
+)
+
+register(
+    id='Pendulum-v1-uniform',
+    entry_point='data.env.pendulum_v1_uniform:PendulumEnvUniform',
 )

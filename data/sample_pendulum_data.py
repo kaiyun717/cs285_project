@@ -17,7 +17,12 @@ def render(state):
     before2 = env.step_from_state(state, np.array([0]))
     return map(env.render_state, (before1[0], before2[0]))
 
-def sample_pendulum(sample_size, output_dir='data/pendulum', step_size=1, apply_control=True, num_shards=10):
+def sample_pendulum(sample_size, 
+                    output_dir='data/samples/pendulum', 
+                    step_size=4, 
+                    apply_control=True, 
+                    num_shards=10):
+
     assert sample_size % num_shards == 0
 
     samples = []

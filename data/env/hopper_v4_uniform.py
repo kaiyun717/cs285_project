@@ -1,10 +1,7 @@
 import numpy as np
 
-from gym import utils
 from gym.envs.mujoco.hopper_v4 import HopperEnv
 
-# def hopper_uniform_creator(env_config):
-#     return HopperEnvUniform(**env_config)
 
 class HopperEnvUniform(HopperEnv):
     def __init__(
@@ -26,8 +23,9 @@ class HopperEnvUniform(HopperEnv):
 
     def reset_model(self):
         qpos = np.array([
-            np.random.uniform(*self._healthy_state_range), # x-pos
-            np.random.uniform(0.8, 2.0), # 0. [healthy_z_range] : rootz (pos)
+            # np.random.uniform(1, 5), # x-pos
+            0,
+            np.random.uniform(0.8, 1.5), # 0. [healthy_z_range] : rootz (pos)
             np.random.uniform(*self._healthy_angle_range), # 1. [healthy_angle_range] : rooty (ang)
             np.random.uniform(*self._healthy_state_range), # 2. [healthy_state_range] : thigh_joint (ang)
             np.random.uniform(*self._healthy_state_range), # 3. [healthy_state_range] : leg_joint (ang)

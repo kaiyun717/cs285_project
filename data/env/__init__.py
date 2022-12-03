@@ -1,1 +1,2 @@
 from data.env.hopper_v4_uniform import HopperEnvUniform
+from data.env.pendulum_v1_uniform import PendulumEnvUniform
