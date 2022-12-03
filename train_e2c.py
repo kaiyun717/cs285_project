@@ -32,7 +32,7 @@ datasets = {'planar': datasets.PlanarDataset,
                                   # obs,  z,   u
 settings = {'planar':   {'image': (1600,    2,   2) },
             'pendulum': {'image': (4608,    3,   1) },
-            'hopper':   {'image': (64*64*4, 512, 3),
+            'hopper':   {'image': (64*64*2, 512, 3),
                         'serial': (11,      2,   3) },
             }
 samplers = {'planar': planar_sampler, 

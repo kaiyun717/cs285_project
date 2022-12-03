@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from normal import NormalDistribution
+from utils import pytorch_utils as ptu
 
 torch.set_default_dtype(torch.float64)
 
@@ -58,10 +59,7 @@ class Transition(nn.Module):
         self.fc_o = nn.Linear(self.h_dim, self.z_dim)
         torch.nn.init.orthogonal_(self.fc_o.weight)
 
-        if torch.cuda.is_available():
-          self.device = torch.device("cuda")
-        else:
-          self.device = torch.device("cpu")
+        self.device = ptu.device
 
     def forward(self, z_bar_t, q_z_t, u_t):
         """
@@ -188,7 +186,7 @@ class CNNEncoder(Encoder):
     - C is input channel, 
     - H == W
     """
-    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=4):
+    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=2):
         #### DEBUG ####
         print('obs_dim: ', obs_dim)
         print('input_channel: ', input_channel)
@@ -212,7 +210,7 @@ class CNNEncoder(Encoder):
 
 
 class CNNDecoder(Decoder):
-    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=1):
+    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=2):
         last_dim = obs_dim//stack_num//4//4//4
         h = round(last_dim ** (1/2))
         w = last_dim // h

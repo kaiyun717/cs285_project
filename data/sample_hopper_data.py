@@ -5,10 +5,26 @@ from tqdm import trange
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import gym
 from datetime import datetime
 import argparse
 import cv2
+
+import gym
+from gym.envs.registration import register
+from gym.envs.registration import registry
+# from data.env.hopper_v4_uniform import HopperEnvUniform, hopper_uniform_creator
+
+ENV_NAME = 'Hopper-v4-uniform'
+# registry.register_env(ENV_NAME, hopper_uniform_creator)
+
+if ENV_NAME not in registry.env_specs:
+    register(
+        id=ENV_NAME,
+        entry_point='data.env.hopper_v4_uniform:HopperEnvUniform',
+        max_episode_steps=1000,
+        reward_threshold=3800.0,
+    )
+print('registerd')
 
 def maxpool_downsample(image: np.ndarray, out_size:int):
     """ https://scipython.com/blog/binning-a-2d-array-in-numpy/
@@ -39,7 +55,7 @@ def opencv_downsample(image: np.ndarray, out_size: tuple):
     return resized
         
 def sample_hopper(sample_size, 
-                  output_dir='data/hopper',
+                  output_dir='data/samples/hopper',
                   obs_type='serial',
                   obs_res=None,
                   step_size=4, 
@@ -48,21 +64,23 @@ def sample_hopper(sample_size,
     assert obs_type in ['image', 'serial']
     assert obs_res == None if obs_type == 'serial' else type(obs_res) is int
 
-    env = gym.make('Hopper-v4')
+    env = gym.make('Hopper-v4-uniform')
 
     obs_size = env.observation_space.shape[0]
     act_size = env.action_space.shape[0]
 
     obs_serial = np.zeros((sample_size, 2, obs_size))
     act_serial = np.zeros((sample_size, act_size))
+    rew_serial = np.zeros((sample_size,))
     
     output_dir = output_dir \
-        + '/sample-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
+        + '/hopper-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
     if not path.exists(output_dir):
         os.makedirs(output_dir)
     
-    state = env.reset()
     for i in trange(sample_size):
+        state = env.reset() # Reset everystep
+        
         before_state = state
         before = env.render(mode='rgb_array')
 
@@ -72,7 +90,7 @@ def sample_hopper(sample_size,
             u = np.zeros((3,))
 
         for _ in range(step_size):
-            state, _, _, _ = env.step(u)
+            state, reward, _, _ = env.step(u)
 
         after_state = state
         after = env.render(mode='rgb_array')
@@ -85,23 +103,25 @@ def sample_hopper(sample_size,
             after = opencv_downsample(after, (obs_res, obs_res))
             after_file = path.join(output_dir, 'after-{:05d}.jpg'.format(i))
             plt.imsave(after_file, after)
-            
-            act_serial[i] = u
 
         else:
             obs_serial[i][0] = before_state
             obs_serial[i][-1] = after_state
-            act_serial[i] = u
+        
+        act_serial[i] = u
+        rew_serial[i] = reward
 
     if obs_type == 'serial':
         df = pd.DataFrame(
             {'before': [list(obs_serial[i][0]) for i in range(sample_size)], 
              'after': [list(obs_serial[i][-1]) for i in range(sample_size)], 
-             'action': [list(act_serial[i]) for i in range(sample_size)]
+             'action': [list(act_serial[i]) for i in range(sample_size)],
+             'reward': [list(rew_serial[i]) for i in range(sample_size)]
              }
         )
     else:
-        df = pd.DataFrame({'action': [list(act_serial[i]) for i in range(sample_size)]})
+        df = pd.DataFrame({'action': [list(act_serial[i]) for i in range(sample_size)],
+                           'reward': rew_serial})
     
     df_file_name = path.join(output_dir, 'dataframe.pkl')
     df.to_pickle(df_file_name)

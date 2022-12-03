@@ -197,7 +197,8 @@ class MujocoDataset(Dataset):
 
             processed.append((torch.cat(tuple(before)),
                               np.array(self.dataframe.loc[i, 'action']),
-                              torch.cat(tuple(after))))
+                              torch.cat(tuple(after)),
+                              np.array(self.dataframe.loc[i, 'reward'])))
         return processed
 
     def _process_obs_serial(self) -> list:
@@ -206,8 +207,9 @@ class MujocoDataset(Dataset):
             before = np.array(self.dataframe.loc[i, 'before'])
             control = np.array(self.dataframe.loc[i, 'action'])
             after = np.array(self.dataframe.loc[i, 'after'])
+            reward = np.array(self.dataframe.loc[i, 'reward'])
 
-            processed.append((before, control, after))
+            processed.append((before, control, after, reward))
 
         return processed
     
