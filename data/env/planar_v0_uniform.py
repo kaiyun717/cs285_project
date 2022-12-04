@@ -26,7 +26,7 @@ class PlanarEnvUniform(gym.Env):
         self.rw_rendered = 2 # robot half-width when rendered
         self.max_step_len = 3
         
-        num_obs = (self.obstacles_center.shape[0] + 1) * self.obstacles_center.shape[1]
+        num_obs = (self.obstacles_center.shape[0] + 2) * self.obstacles_center.shape[1]
         obs_low = np.zeros((num_obs,))
         obs_high = np.repeat(self.height, num_obs)
         self.observation_space = spaces.Box(obs_low, obs_high, dtype=np.float32)
@@ -34,6 +34,8 @@ class PlanarEnvUniform(gym.Env):
         act_low = np.repeat(-self.max_step_len, 2)
         act_high = np.repeat(self.max_step_len, 2)
         self.action_space = spaces.Box(act_low, act_high)
+
+        self.goal_state = np.zeros((2,))
 
         self.state = np.zeros((2,))
 
@@ -52,9 +54,14 @@ class PlanarEnvUniform(gym.Env):
         reset_state = self._reset_state()
         while self._is_colliding(reset_state):
             reset_state = self._reset_state()
-
         self.state = reset_state        
-        aug_state = self._augument_state(self.state)
+
+        goal_state = self._reset_state()
+        while self._is_colliding(goal_state):
+            goal_state = self._reset_state()
+        self.goal_state = goal_state
+
+        aug_state = self._augument_state(np.vstack((self.goal_state, self.state)))
         return np.array(aug_state, dtype=np.float32)
         
     def _reset_state(self):
@@ -64,22 +71,31 @@ class PlanarEnvUniform(gym.Env):
         return state
 
     def _augument_state(self, state):
-        aug_state = np.vstack((self.obstacles_center, self.state))  # Return [obstacles, state]
+        aug_state = np.vstack((self.obstacles_center, state))  # Return [obstacles, state]
         aug_state = np.reshape(aug_state, newshape=(aug_state.shape[0]*aug_state.shape[1], 1))
         return aug_state
 
     def step(self, action):
         next_state = self.state + action
         self.state = next_state
-        done = self._check_done(self.state)
+        collision = self._is_colliding(self.state)
+        reached = self._reached(self.state)
 
-        if done:
-            reward = 0.0
+        if reached:
+            reward = -self._distance_to_goal(self.state)
+            done = True
+        elif collision:
+            reward = 0
+            done = True
         else:
-            reward = 1.0
+            reward = -self._distance_to_goal(self.state)
+            done = False
 
-        aug_next_state = self._augument_state(next_state)
+        aug_next_state = self._augument_state(np.vstack((self.goal_state, self.state)))
         return aug_next_state, reward, done, {}
+
+    def _distance_to_goal(self, state):
+        return np.sqrt(np.sum((self.goal_state - state)**2))
 
     def render(self, mode="human"):
         top, bottom, left, right = self._get_pixel_location(self.state)
@@ -91,9 +107,9 @@ class PlanarEnvUniform(gym.Env):
         return self._is_valid_action(state, action, epsilon=epsilon)
 
     def _check_done(self, state):
-        done = not self._is_colliding(state)
-        
-        return done
+        collision = self._is_colliding(state)
+        reached = self._reached(state)
+        return not collision or reached
 
     def _is_colliding(self, state):
         if np.any([state - self.rw < 0, state + self.rw > self.height]):
@@ -106,7 +122,14 @@ class PlanarEnvUniform(gym.Env):
                 return True
         
         return False
-    
+
+    def _reached(self, state):
+        x, y = state[0], state[1]
+        if (np.abs(self.goal_state[0] - x) <= self.r_overlap) \
+            and (np.abs(self.goal_state[1] - y) <= self.r_overlap):
+            return True
+        return False
+        
     def _is_valid_action(self, state, action, epsilon=0.1):
         # if the difference between the action and the actual distance 
         # between x and x_next are in range(0,epsilon)
