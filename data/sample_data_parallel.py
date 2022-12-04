@@ -13,6 +13,8 @@ import gym
 from gym.envs.registration import register
 from gym.envs.registration import registry
 
+from multiprocessing import Pool
+
 def maxpool_downsample(image: np.ndarray, out_size:int):
     """ https://scipython.com/blog/binning-a-2d-array-in-numpy/
         https://stackoverflow.com/questions/48121916/numpy-resize-rescale-image
@@ -41,8 +43,11 @@ def opencv_downsample(image: np.ndarray, out_size: tuple):
     resized = cv2.resize(image, dsize=out_size, interpolation=cv2.INTER_CUBIC)
     return resized
         
-def sample_hopper(sample_size, 
-                  output_dir='data/samples/hopper',
+##########################################################################################
+
+def sample_hopper(start_num,
+                  sample_size, 
+                  output_dir,
                   obs_type='serial',
                   obs_res=None,
                   step_size=4, 
@@ -60,11 +65,6 @@ def sample_hopper(sample_size,
     act_serial = np.zeros((sample_size, act_size))
     rew_serial = np.zeros((sample_size,))
     done_serial = np.zeros((sample_size,))
-    
-    output_dir = output_dir \
-        + '/hopper-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
-    if not path.exists(output_dir):
-        os.makedirs(output_dir)
     
     for i in trange(sample_size):
         state = env.reset() # Reset everystep
@@ -87,11 +87,11 @@ def sample_hopper(sample_size,
 
         if obs_type == 'image': 
             before = opencv_downsample(before, (obs_res, obs_res))
-            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(i))
+            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(start_num+i))
             plt.imsave(before_file, before)
 
             after = opencv_downsample(after, (obs_res, obs_res))
-            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(i))
+            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(start_num+i))
             plt.imsave(after_file, after)
 
         else:
@@ -116,15 +116,13 @@ def sample_hopper(sample_size,
                            'reward': rew_serial,
                            'done': done_serial})
     
-    df_file_name = path.join(output_dir, 'dataframe.pkl')
-    df.to_pickle(df_file_name)
-
-    print(f"SAMPLING DONE! DATA SAVED AS {obs_type.upper()}-TYPE IN: {output_dir}")
-
+    return df
+    
 ##########################################################################################
 
-def sample_pendulum(sample_size, 
-                    output_dir='data/samples/pendulum', 
+def sample_pendulum(start_num,
+                    sample_size,
+                    output_dir,
                     obs_type='serial',
                     obs_res=None,
                     step_size=4, 
@@ -142,11 +140,6 @@ def sample_pendulum(sample_size,
     act_serial = np.zeros((sample_size, act_size))
     rew_serial = np.zeros((sample_size,))
     done_serial = np.zeros((sample_size,))
-    
-    output_dir = output_dir \
-        + '/pendulum-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
-    if not path.exists(output_dir):
-        os.makedirs(output_dir)
     
     for i in trange(sample_size):
         state = env.reset()
@@ -169,11 +162,11 @@ def sample_pendulum(sample_size,
 
         if obs_type == 'image': 
             before = opencv_downsample(before, (obs_res, obs_res))
-            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(i))
+            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(start_num+i))
             plt.imsave(before_file, before)
 
             after = opencv_downsample(after, (obs_res, obs_res))
-            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(i))
+            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(start_num+i))
             plt.imsave(after_file, after)
 
         else:
@@ -198,15 +191,13 @@ def sample_pendulum(sample_size,
                            'reward': rew_serial,
                            'done': done_serial})
     
-    df_file_name = path.join(output_dir, 'dataframe.pkl')
-    df.to_pickle(df_file_name)
-
-    print(f"SAMPLING DONE! DATA SAVED AS {obs_type.upper()}-TYPE IN: {output_dir}")
+    return df
 
 ##########################################################################################
 
-def sample_cartpole(sample_size, 
-                    output_dir='data/samples/cartpole', 
+def sample_cartpole(start_num,
+                    sample_size, 
+                    output_dir, 
                     obs_type='serial',
                     obs_res=None,
                     step_size=4, 
@@ -224,11 +215,6 @@ def sample_cartpole(sample_size,
     act_serial = np.zeros((sample_size, act_size))
     rew_serial = np.zeros((sample_size,))
     done_serial = np.zeros((sample_size,))
-    
-    output_dir = output_dir \
-        + '/cartpole-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
-    if not path.exists(output_dir):
-        os.makedirs(output_dir)
     
     for i in trange(sample_size):
         state = env.reset()
@@ -251,11 +237,11 @@ def sample_cartpole(sample_size,
 
         if obs_type == 'image': 
             before = opencv_downsample(before, (obs_res, obs_res))
-            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(i))
+            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(start_num+i))
             plt.imsave(before_file, before)
 
             after = opencv_downsample(after, (obs_res, obs_res))
-            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(i))
+            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(start_num+i))
             plt.imsave(after_file, after)
 
         else:
@@ -280,18 +266,16 @@ def sample_cartpole(sample_size,
                            'reward': rew_serial,
                            'done': done_serial})
     
-    df_file_name = path.join(output_dir, 'dataframe.pkl')
-    df.to_pickle(df_file_name)
-
-    print(f"SAMPLING DONE! DATA SAVED AS {obs_type.upper()}-TYPE IN: {output_dir}")
+    return df
 
 ##########################################################################################
 
-def sample_planar(sample_size, 
-                  output_dir='data/samples/planar', 
+def sample_planar(start_num,
+                  sample_size, 
+                  output_dir, 
                   obs_type='serial',
                   obs_res=None,
-                  # step_size=4, 
+                  step_size=1, 
                   apply_control=True):
 
     assert obs_type in ['image', 'serial']
@@ -306,11 +290,6 @@ def sample_planar(sample_size,
     act_serial = np.zeros((sample_size, act_size))
     rew_serial = np.zeros((sample_size,))
     done_serial = np.zeros((sample_size,))
-    
-    output_dir = output_dir \
-        + '/planar-' + (datetime.now()).strftime('%m_%d_%Y_%H%M%S')
-    if not path.exists(output_dir):
-        os.makedirs(output_dir)
     
     for i in trange(sample_size):
         state = env.reset()
@@ -336,11 +315,11 @@ def sample_planar(sample_size,
 
         if obs_type == 'image': 
             before = opencv_downsample(before, (obs_res, obs_res))
-            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(i))
+            before_file = path.join(output_dir, 'before-{:06d}.jpg'.format(start_num+i))
             plt.imsave(before_file, before)
 
             after = opencv_downsample(after, (obs_res, obs_res))
-            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(i))
+            after_file = path.join(output_dir, 'after-{:06d}.jpg'.format(start_num+i))
             plt.imsave(after_file, after)
 
         else:
@@ -365,12 +344,49 @@ def sample_planar(sample_size,
                            'reward': rew_serial,
                            'done': done_serial})
     
+    return df
+
+##########################################################################################
+
+def parallel_sampler(env: str, 
+                     process_num: int, 
+                     sample_size: int, 
+                     obs_type: str, 
+                     obs_res, 
+                     step_size):
+
+    output_dir = 'data/samples/{}'.format(env.lower()) \
+        + '/{}-{}'.format(env.lower(), (datetime.now()).strftime('%m_%d_%Y_%H%M%S'))
+    if not path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    sample_size = sample_size // process_num
+    parameters = []
+    for i in range(process_num):
+        parameters.append((sample_size*i, sample_size, output_dir, obs_type, obs_res, step_size, True))
+
+    if env == 'Hopper':
+        sampler = sample_hopper
+    elif env == 'Pendulum':
+        sampler = sample_pendulum
+    elif env == 'CartPole':
+        sampler = sample_cartpole
+    elif env == 'Planar':
+        sampler = sample_planar
+    
+    with Pool() as pool:
+        df_s = pool.starmap(sampler, parameters)
+    
+    df = pd.concat(list(df_s), ignore_index=True)
+
+    #################### After all df's are returned #####################
     df_file_name = path.join(output_dir, 'dataframe.pkl')
     df.to_pickle(df_file_name)
 
+    print(df)
+
     print(f"SAMPLING DONE! DATA SAVED AS {obs_type.upper()}-TYPE IN: {output_dir}")
 
-##########################################################################################
 
 def main(args):
     env = args.env
@@ -378,6 +394,9 @@ def main(args):
     obs_type = args.obs_type
     obs_res = args.obs_res
     step_size= args.step_size
+    process_num = args.process_num
+
+    assert sample_size % process_num == 0
 
     if env == 'Hopper':
         ENV_NAME = 'Hopper-v4-uniform'
@@ -389,8 +408,6 @@ def main(args):
                 reward_threshold=3800.0,
             )
     
-        sample_hopper(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res, step_size=step_size)
-    
     elif env == 'Pendulum':
         ENV_NAME = 'Pendulum-v1-uniform'
         if ENV_NAME not in registry.env_specs:
@@ -400,8 +417,6 @@ def main(args):
                 max_episode_steps=200,
             )
 
-        sample_pendulum(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res, step_size=step_size)
-    
     elif env == 'CartPole':
         ENV_NAME = 'CartPole-v0-uniform'
         if ENV_NAME not in registry.env_specs:
@@ -412,8 +427,6 @@ def main(args):
                 reward_threshold=195.0,     # CartPole-v0 parameter
             )
 
-        sample_cartpole(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res, step_size=step_size)
-    
     elif env == 'Planar':
         ENV_NAME = 'Planar-v0-uniform'
         if ENV_NAME not in registry.env_specs:
@@ -422,14 +435,14 @@ def main(args):
                 entry_point='data.env.planar_v0_uniform:PlanarEnvUniform',
             )
 
-        sample_planar(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res)
-    
+    parallel_sampler(env, process_num, sample_size, obs_type, obs_res, step_size)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--env', required=True, type=str, help='Pendulum, Planar, Hopper')
     parser.add_argument('--sample_size', required=True, type=int, help='the number of samples')
+    parser.add_argument('--process_num', required=True, type=int, default=1, help='number of cores')
     parser.add_argument('--obs_type', required=True, type=str, help='type of obs to be saved')
     parser.add_argument('--obs_res', nargs='?', const=1, type=int)
     parser.add_argument('--step_size', default=4, type=int)

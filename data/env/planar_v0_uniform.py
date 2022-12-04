@@ -72,8 +72,8 @@ class PlanarEnvUniform(gym.Env):
 
     def _augument_state(self, state):
         aug_state = np.vstack((self.obstacles_center, state))  # Return [obstacles, state]
-        aug_state = np.reshape(aug_state, newshape=(aug_state.shape[0]*aug_state.shape[1], 1))
-        return aug_state
+        aug_state = np.reshape(aug_state, newshape=(aug_state.shape[0]*aug_state.shape[1],))
+        return aug_state.astype(np.float32)
 
     def step(self, action):
         next_state = self.state + action
@@ -155,7 +155,11 @@ class PlanarEnvUniform(gym.Env):
         top_next, bottom_next, left_next, right_next = self._get_pixel_location(next_state)
         x_diff = np.array([top_next - top, left_next - left], dtype=np.float32)
         
-        return (not np.sqrt(np.sum((x_diff - action)**2)) > epsilon)
+        next_state_x = int(round(next_state[0]))
+        next_state_y = int(round(next_state[1]))
+        next_state_in_bounds = (next_state_x in range(self.height)) and (next_state_y in range(self.height))
+
+        return (not np.sqrt(np.sum((x_diff - action)**2)) > epsilon) and next_state_in_bounds
 
     def _get_pixel_location(self, state):
         center_x, center_y = int(round(state[0])), int(round(state[1]))
