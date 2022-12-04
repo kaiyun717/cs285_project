@@ -21,7 +21,7 @@ class PlanarEnvUniform(gym.Env):
         
         self.r_overlap = 0.5 # agent cannot be in any rectangular area with 
                              # obstacles as centers and half-width = 0.5
-        self.r = 2.5         # radius of the obstacles when rendered
+        self.r = 1           # radius of the obstacles when rendered
         self.rw = 3          # robot half-width
         self.rw_rendered = 2 # robot half-width when rendered
         self.max_step_len = 3
@@ -57,7 +57,7 @@ class PlanarEnvUniform(gym.Env):
         self.state = reset_state        
 
         goal_state = self._reset_state()
-        while self._is_colliding(goal_state):
+        while self._is_colliding(goal_state, delta=self.r_overlap*5):
             goal_state = self._reset_state()
         self.goal_state = goal_state
 
@@ -98,9 +98,23 @@ class PlanarEnvUniform(gym.Env):
         return np.sqrt(np.sum((self.goal_state - state)**2))
 
     def render(self, mode="human"):
-        top, bottom, left, right = self._get_pixel_location(self.state)
+        # Obstacles and entire map
         env_array = np.copy(self.env_arr)
-        env_array[top:bottom, left:right] = 1
+        
+        # Current state
+        # top, bottom, left, right = self._get_pixel_location(self.state)
+        state_x = int(round(self.state[0]))
+        state_y = int(round(self.state[1]))
+        env_array[state_x, state_y] = 1
+
+        # Goal state
+        goal_x, goal_y = int(round(self.goal_state[0])), int(round(self.goal_state[1]))
+        env_array[goal_x, goal_y] = 1
+        env_array[goal_x+1, goal_y+1] = 1
+        env_array[goal_x-1, goal_y-1] = 1
+        env_array[goal_x+1, goal_y-1] = 1
+        env_array[goal_x-1, goal_y+1] = 1
+
         return env_array
 
     def is_valid_action(self, state, action, epsilon=0.1):
@@ -111,14 +125,17 @@ class PlanarEnvUniform(gym.Env):
         reached = self._reached(state)
         return not collision or reached
 
-    def _is_colliding(self, state):
+    def _is_colliding(self, state, delta=None):
         if np.any([state - self.rw < 0, state + self.rw > self.height]):
             return True
         
+        if delta is None:
+            delta = self.r_overlap
+
         x, y = state[0], state[1]
         for obst in self.obstacles_center:
-            if (np.abs(obst[0] - x) <= self.r_overlap) \
-                and (np.abs(obst[1] - y) <= self.r_overlap):
+            if (np.abs(obst[0] - x) <= delta) \
+                and (np.abs(obst[1] - y) <= delta):
                 return True
         
         return False
