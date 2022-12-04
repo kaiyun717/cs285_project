@@ -14,10 +14,7 @@ import json
 from normal import NormalDistribution
 from e2c_model import E2C
 import datasets
-import data.sample_planar as planar_sampler
-import data.sample_pendulum_data as pendulum_sampler
-import data.sample_cartpole_data as cartpole_sampler
-import data.sample_hopper_data as hopper_sampler
+from data.sample_eval import sample_eval_data
 
 torch.set_default_dtype(torch.float64)
 
@@ -26,19 +23,22 @@ torch.set_default_dtype(torch.float64)
 # else:
 #   device = torch.device("cpu")
 
-datasets = {'planar': datasets.PlanarDataset, 
+datasets = {'planar': datasets.MujocoDataset, 
             'pendulum': datasets.MujocoDataset,
+            'cartpole': datasets.MujocoDataset,
             'hopper': datasets.MujocoDataset}
                                   # obs,  z,   u
-settings = {'planar':   {'image': (1600,    2,   2) },
-            'pendulum': {'image': (48*48,   3,   1) },
+settings = {'cartpole': {'image': (64*64,    3,  1)},
+            'planar':   {'image': (40*40,    2,  2)},
+            'pendulum': {'image': (48*48,   3,   1)},
             'hopper':   {'image': (64*64, 512,   3),
-                        'serial': (11,      2,   3) },
-            }
-samplers = {'planar': planar_sampler, 
-            'pendulum': pendulum_sampler, 
-            'cartpole': cartpole_sampler,
-            'hopper': hopper_sampler}
+                        'serial': (11,      2,   3)}}
+
+sampler_settings = {'cartpole': (4),
+                    'planar':   (1),
+                    'pendulum': (4),
+                    'hopper':   (4)}
+
 num_eval = 10 # number of images evaluated on tensorboard
 
 def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda, mse=False):
@@ -69,7 +69,7 @@ def train(model, train_loader, lam, optimizer):
     print("Number of batches: ", num_batches)   # debug
     print("Train Loader `batch_size`: ", train_loader.batch_size)
 
-    for _, (x, u, x_next, reward) in enumerate(train_loader, 0):
+    for _, (x, u, x_next, reward, done) in enumerate(train_loader, 0):
         # x: 'before' obs in batch & stack (num_batch, obs_dim)
         # u: 'action' in batch (num_batch, action)
         # x_next: 'after' obs in batch (num_batch, obs_dim)
@@ -127,7 +127,7 @@ def evaluate(model, test_loader):
     num_batches = len(test_loader)
     state_loss, next_state_loss = 0., 0.
     with torch.no_grad():
-        for x, u, x_next in test_loader:
+        for x, u, x_next, r, d in test_loader:  # state, action, next_state, reward, done
             if args.cnn:
                 x = x.double().to(ptu.device)
                 x_next = x_next.double().to(ptu.device)
@@ -150,9 +150,10 @@ def evaluate(model, test_loader):
 
 # code for visualizing the training process
 def predict_x_next(model, env, num_eval):
-    # frist sample a true trajectory from the environment
-    sampler = samplers[env]
-    state_samples, sampled_data = sampler.sample(num_eval)
+    # first sample a true trajectory from the environment
+    obs_res = int(np.sqrt(settings[env]['image'][0]))
+    step_size = sampler_settings[env][0]
+    sampled_data = sample_eval_data(env=env, sample_size=num_eval, obs_res=obs_res, step_size=step_size)
 
     # use the trained model to predict the next observation
     predicted = []
@@ -162,7 +163,7 @@ def predict_x_next(model, env, num_eval):
         u = torch.from_numpy(u).double().unsqueeze(dim=0).to(ptu.device)
         with torch.no_grad():
             x_next_pred = model.predict(x_reshaped, u)
-        predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(sampler.width, sampler.height))
+        predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(obs_res, obs_res))
     true_x_next = [data[-1] for data in sampled_data]
     return true_x_next, predicted
 
@@ -189,7 +190,7 @@ def plot_preds(model, env, num_eval):
 def main(args):
     sample_path = args.sample_path
     env_name = args.env
-    assert env_name in ['planar', 'pendulum', 'hopper']
+    assert env_name in ['planar', 'pendulum', 'hopper', 'cartpole']
     propor = args.propor
     batch_size = args.batch_size
     lr = args.lr

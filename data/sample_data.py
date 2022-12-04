@@ -372,13 +372,7 @@ def sample_planar(sample_size,
 
 ##########################################################################################
 
-def main(args):
-    env = args.env
-    sample_size = args.sample_size
-    obs_type = args.obs_type
-    obs_res = args.obs_res
-    step_size= args.step_size
-
+def sampler(env, sample_size, obs_type, obs_res, step_size):
     if env == 'Hopper':
         ENV_NAME = 'Hopper-v4-uniform'
         if ENV_NAME not in registry.env_specs:
@@ -423,6 +417,15 @@ def main(args):
             )
 
         sample_planar(sample_size=sample_size, obs_type=obs_type, obs_res=obs_res)
+
+def main(args):
+    env = args.env
+    sample_size = args.sample_size
+    obs_type = args.obs_type
+    obs_res = args.obs_res
+    step_size= args.step_size
+
+    sampler(env, sample_size, obs_type, obs_res, step_size)
     
 
 if __name__ == "__main__":
