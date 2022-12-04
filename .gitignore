@@ -1,6 +1,4 @@
 data/data
-data/cartpole
-data/pendulum
 data/samples
 logs/
 result/
