@@ -25,10 +25,10 @@ if torch.cuda.is_available():
 else:
   device = torch.device("cpu")
 
-datasets = {'planar': datasets.MujocoDataset, 
-            'pendulum': datasets.MujocoDataset,
-            'cartpole': datasets.MujocoDataset,
-            'hopper': datasets.MujocoDataset}
+# datasets = {'planar': datasets.MujocoDataset, 
+#             'pendulum': datasets.MujocoDataset,
+#             'cartpole': datasets.MujocoDataset,
+#             'hopper': datasets.MujocoDataset}
                                   # obs,    z,  u
 settings = {'cartpole': {'image': (64*64,   8,  1)},
             'planar':   {'image': (40*40,   8,  2)},
