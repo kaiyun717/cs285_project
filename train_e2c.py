@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import argparse
 import sys
 import numpy as np
+import time
 from utils import pytorch_utils as ptu
 
 import os
@@ -18,10 +19,10 @@ from data.sample_eval import sample_eval_data
 
 torch.set_default_dtype(torch.float64)
 
-# if torch.cuda.is_available():
-#   device = torch.device("cuda")
-# else:
-#   device = torch.device("cpu")
+if torch.cuda.is_available():
+  device = torch.device("cuda")
+else:
+  device = torch.device("cpu")
 
 datasets = {'planar': datasets.MujocoDataset, 
             'pendulum': datasets.MujocoDataset,
@@ -31,7 +32,7 @@ datasets = {'planar': datasets.MujocoDataset,
 settings = {'cartpole': {'image': (64*64,    3,  1)},
             'planar':   {'image': (40*40,    2,  2)},
             'pendulum': {'image': (48*48,   3,   1)},
-            'hopper':   {'image': (64*64, 512,   3),
+            'hopper':   {'image': (64*64, 16,   3),
                         'serial': (11,      2,   3)}}
 
 sampler_settings = {'cartpole': (4),
@@ -69,10 +70,12 @@ def train(model, train_loader, lam, optimizer):
     print("Number of batches: ", num_batches)   # debug
     print("Train Loader `batch_size`: ", train_loader.batch_size)
 
-    for _, (x, u, x_next, reward, done) in enumerate(train_loader, 0):
+    tt3 = 0
+    for _, (x, u, x_next) in enumerate(train_loader, 0):
         # x: 'before' obs in batch & stack (num_batch, obs_dim)
         # u: 'action' in batch (num_batch, action)
         # x_next: 'after' obs in batch (num_batch, obs_dim)
+        # print('data loading time', time.time() - tt3)
         
         if args.cnn:
             x = x.double().to(ptu.device)
@@ -85,7 +88,7 @@ def train(model, train_loader, lam, optimizer):
         optimizer.zero_grad()
 
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
-
+        # print('model time', model.encode_time + model.decode_time + model.transition_time)
         if args.cnn:
             x = x.view(-1, model.obs_dim)
             x_next = x_next.view(-1, model.obs_dim)
@@ -93,6 +96,7 @@ def train(model, train_loader, lam, optimizer):
             x_next_pred = x_next_pred.view(-1, model.obs_dim)
             # NOTE: what is this?
 
+        tt1 = time.time()
         loss = compute_loss(
                     x=x,                            # 'before' obs
                     x_next=x_next,                  # 'after' obs
@@ -104,10 +108,14 @@ def train(model, train_loader, lam, optimizer):
                     lamda=lam,
                     mse=args.cnn                         
                 )
+        # tt2 = time.time()
+        # print('loss time', tt2-tt1)
 
         avg_loss += loss.item()
         loss.backward()
         optimizer.step()
+        # tt3 = time.time()
+        # print('update time', tt3-tt2)
 
     return avg_loss / num_batches
 
@@ -127,7 +135,7 @@ def evaluate(model, test_loader):
     num_batches = len(test_loader)
     state_loss, next_state_loss = 0., 0.
     with torch.no_grad():
-        for x, u, x_next, r, d in test_loader:  # state, action, next_state, reward, done
+        for x, u, x_next in test_loader:  # state, action, next_state, reward, done
             if args.cnn:
                 x = x.double().to(ptu.device)
                 x_next = x_next.double().to(ptu.device)
@@ -252,13 +260,18 @@ def main(args):
         json.dump(hparameter, f, indent=2)
 
     for i in range(epoches):
+        # t1 = time.time()
         avg_loss = train(model, train_loader, lam, optimizer)
         print('Epoch %d' % i)
         print("Training loss: %f" % (avg_loss))
+        # t2 = time.time()
+        # print('Time elapsed for training', t2-t1)
         # evaluate on test set
         state_loss, next_state_loss = evaluate(model, test_loader)
         print('State loss: ' + str(state_loss))
         print('Next state loss: ' + str(next_state_loss))
+        # t3 = time.time()
+        # print('Time elapsed for evaluating', t3-t2)
 
         # ...log the running loss
         writer.add_scalar('training_loss', avg_loss, i)
