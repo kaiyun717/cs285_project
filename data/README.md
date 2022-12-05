@@ -79,6 +79,7 @@ python data/sample_data.py --env cartpole --sample_size 10000 --obs_type serial 
 ```
 - Output: # DONES:  819, # RESETS:  3262
 - -> 919 meaningful resets
+- Stack 2: 9160 samples saved in offline dataset
 
 ### Hopper sampling statistics
 ```console

@@ -201,10 +201,12 @@ def main(args):
     torch.manual_seed(seed)
     ptu.init_gpu(use_gpu=args.gpu)
 
-    dataset = datasets.MujocoDataset(
+    dataset = datasets.OfflineDataset(
         dir='./data/samples/' + env_name + '/' + sample_path,
         stack=stack
     )
+    
+    print('OFFLINE DATASET SIZE: ', len(dataset))
 
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
     train_loader = DataLoader(train_set, batch_size=batch_size, 

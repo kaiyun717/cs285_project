@@ -12,7 +12,7 @@ import torch
 
 torch.set_default_dtype(torch.float64)
 
-class MujocoDataset(Dataset):
+class OfflineDataset(Dataset):
 
     def __init__(self, dir, stack=1):
         """
@@ -25,17 +25,12 @@ class MujocoDataset(Dataset):
         self.dataframe: pd.DataFrame = pd.read_pickle(dir + '/dataframe.pkl')
         
         # Determine obs type : image or serial
-        self.obs_image = False             # Serial
+        self.obs_image: bool = False             # Serial
         for fname in os.listdir(dir):
             if (fname.endswith('.jpg') or fname.endswith('.png')):
                 self.obs_image = True      # Image
                 break
         
-        if self.obs_image:
-            assert stack != 1, "For image obs, you need to stack states."
-        else:
-            assert stack == 1, "For serial obs, you cannot stack states."
-
         self._processed = []
         self._process()
 
@@ -48,75 +43,72 @@ class MujocoDataset(Dataset):
     @staticmethod
     def _process_image(img):
         processed_img = ToTensor()((img.convert('L')))
-        
-        # print("Processed Image: ")
-        # print(processed_img.shape)
-
         return processed_img   # No need for resizing!
                                # Downsampling happens when collecting.
     def _process(self):
         file_name = 'processed_{}.pkl'.format(str(self.stack))
         preprocessed_file = os.path.join(self.dir, file_name)
         if not os.path.exists(preprocessed_file):
-            if self.obs_image:
-                processed: list = self._process_obs_image()
-            else:
-                processed: list = self._process_obs_serial()
+            processed: list = self._process_samples()
             
             with open(preprocessed_file, 'wb') as f:
                 pickle.dump(processed, f)
+                f.close()
             self._processed = processed
         else:
             with open(preprocessed_file, 'rb') as f:
                 self._processed = pickle.load(f)
 
-    def _process_obs_image(self) -> list:
+    def _process_samples(self) -> list:
+        if self.obs_image:
+            desc = 'processing image data'
+        else:
+            desc = 'processing serial data'
         processed = []
         for i in trange(self.stack-1, len(self), 
-                        desc='processing image data'):
+                        desc=desc):
 
             before = []
             after = []
             for t in reversed(range(self.stack)):
-                # i = 3
-                # t = 3,2,1,0
-                # --> i - t = 0, 1, 2, 3
+                ##################################
+                ##################################
+                ##### i = 3                  #####
+                ##### t = 3,2,1,0            #####
+                ##### --> i - t = 0, 1, 2, 3 #####
+                ##### len = 100              #####
+                ##### i = 96, 97, 98, 99     #####
+                ##################################
+                ##################################
+                idx = i - t       # idx
 
-                # len = 100
-                # i = 96, 97, 98, 99 
-                b_idx = i - t       # before
-                # a_idx = i - t + 1   # after
-                temp_before = Image.open(os.path.join(self.dir,
-                                            f'before-{str(b_idx).zfill(6)}.jpg'))
-                temp_after = Image.open(os.path.join(self.dir,
-                                            f'after-{str(b_idx).zfill(6)}.jpg'))
-                before.append(self._process_image(temp_before))
-                after.append(self._process_image(temp_after))
+                # If `done=True` in midst of stacking, then skip to next.
+                done = bool(self.dataframe.loc[idx, 'done'])
+                if done and t != 0:
+                    break
+                
+                if self.obs_image:  # saved as images
+                    temp_before = Image.open(os.path.join(self.dir,
+                                                f'before-{str(idx).zfill(6)}.jpg'))
+                    temp_after = Image.open(os.path.join(self.dir,
+                                                f'after-{str(idx).zfill(6)}.jpg'))
+                    before.append(self._process_image(temp_before))
+                    after.append(self._process_image(temp_after))
+                else:               # saved as serial
+                    before.append(torch.Tensor(self.dataframe.loc[idx, 'before']))
+                    after.append(torch.Tensor(self.dataframe.loc[idx, 'after']))
 
-            # img_num = str(i).zfill(5)
-            # before = Image.open(os.path.join(self.dir, f'before-{img_num}.jpg'))
-            # after = Image.open(os.path.join(self.dir, f'after-{img_num}.jpg'))
+            # If `done=True` in midst of stacking, then skip to next.
+            if len(before) != self.stack:
+                continue
 
             processed.append((torch.cat(tuple(before)),
                               np.array(self.dataframe.loc[i, 'action']),
                               torch.cat(tuple(after)),
                               np.array(self.dataframe.loc[i, 'reward']),
                               np.array(self.dataframe.loc[i, 'done'])))
+        print('OFFLINE DATASET SIZE: ', len(processed))
         return processed
 
-    def _process_obs_serial(self) -> list:
-        processed = []
-        for i in trange(len(self), desc='processing serial data'):
-            before = np.array(self.dataframe.loc[i, 'before'])
-            control = np.array(self.dataframe.loc[i, 'action'])
-            after = np.array(self.dataframe.loc[i, 'after'])
-            reward = np.array(self.dataframe.loc[i, 'reward'])
-            done = np.array(self.dataframe.loc[i, 'done'])
-
-            processed.append((before, control, after, reward, done))
-
-        return processed
-    
     def return_obs_image(self) -> bool:
         return self.obs_image
-
