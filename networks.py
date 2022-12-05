@@ -283,34 +283,13 @@ class MujocoTransition(Transition):
         super().__init__(net, z_dim, u_dim)
 
 CONFIG = {
-    'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
-    'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition),
-    'hopper': (SerialEncoder, SerialDecoder, MujocoTransition)
+    'planar': (SerialEncoder, SerialDecoder, MujocoTransition),
+    'pendulum': (SerialEncoder, SerialDecoder, MujocoTransition),
+    'hopper': (SerialEncoder, SerialDecoder, MujocoTransition),
+    'cartpole': (SerialEncoder, SerialDecoder, MujocoTransition)
 }
 
 def load_config(name):
     return CONFIG[name]
 
 __all__ = ['load_config']
-
-# enc = PendulumEncoder()
-# dec = PendulumDecoder()
-# trans = PendulumTransition()
-#
-# x = torch.randn(size=(10, 4608))
-# # print (x.size())
-# mean, logvar = enc(x)
-# # print (logvar.size())
-# x_recon = dec(mean)
-# # print (x_recon.size())
-#
-# q_z_t = NormalDistribution(mean, logvar)
-# print (q_z_t.mean.size())
-# print (q_z_t.cov.size())
-# u_t = torch.randn(size=(10, 1))
-# z_t_1 = trans(mean, q_z_t, u_t)
-# print (z_t_1[1].mean.size())
-# print (z_t_1[1].cov.size())
-#
-# kl = NormalDistribution.KL_divergence(z_t_1[1], q_z_t)
-# print (kl)
