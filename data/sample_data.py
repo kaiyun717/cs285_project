@@ -39,6 +39,7 @@ def sample_train_data(env_name,
     act_serial = np.zeros((sample_size, act_size))
     rew_serial = np.zeros((sample_size,))
     done_serial = np.zeros((sample_size,))
+    # reset_serial = np.zeros((sample_size,)) # NOTE: only for those states that are reset without done
     
     pbar = tqdm(total=sample_size)
 
@@ -46,10 +47,11 @@ def sample_train_data(env_name,
     dones = 0   # NOTE: debug
 
     sample_num = 0
+    state = env.reset()
     while sample_num < sample_size:
-        if sample_num % reset_steps == 0:
-            state = env.reset()
-            resets += 1 # NOTE: debug
+        # if sample_num % reset_steps == 0:
+        #     state = env.reset()
+        #     resets += 1 # NOTE: debug
         
         before = env.render(mode='rgb_array')
 
