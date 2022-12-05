@@ -8,7 +8,7 @@ import time
 torch.set_default_dtype(torch.float64)
 
 class E2C(nn.Module):
-    def __init__(self, obs_dim, z_dim, u_dim, env = 'planar', stack=1, use_cnn=False):
+    def __init__(self, obs_dim, z_dim, u_dim, env, stack=1, use_cnn=False):
         """
         - stack (int): number of frames to concatenate (defaults to `1`)
         """

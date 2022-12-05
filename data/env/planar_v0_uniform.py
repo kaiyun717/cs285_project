@@ -85,7 +85,7 @@ class PlanarEnvUniform(gym.Env):
             reward = -self._distance_to_goal(self.state)
             done = True
         elif collision:
-            reward = 0
+            reward = -40    # NOTE: design choice
             done = True
         else:
             reward = -self._distance_to_goal(self.state)
@@ -105,7 +105,9 @@ class PlanarEnvUniform(gym.Env):
         # top, bottom, left, right = self._get_pixel_location(self.state)
         state_x = int(round(self.state[0]))
         state_y = int(round(self.state[1]))
-        env_array[state_x, state_y] = 1
+        state_in_bound = (state_x in range(self.height)) and (state_y in range(self.height))
+        if state_in_bound:
+            env_array[state_x, state_y] = 1
 
         # Goal state
         goal_x, goal_y = int(round(self.goal_state[0])), int(round(self.goal_state[1]))
@@ -119,6 +121,15 @@ class PlanarEnvUniform(gym.Env):
 
     def is_valid_action(self, state, action, epsilon=0.1):
         return self._is_valid_action(state, action, epsilon=epsilon)
+    
+    def get_valid_random_action(self, epsilon=0.1):
+        action = self.action_space.sample()
+        while True:
+            if self._is_valid_action(self.state, action, epsilon):
+                break
+            else:
+                action = self.action_space.sample()
+        return action
 
     def _check_done(self, state):
         collision = self._is_colliding(state)
@@ -126,6 +137,7 @@ class PlanarEnvUniform(gym.Env):
         return not collision or reached
 
     def _is_colliding(self, state, delta=None):
+        # Out-of-bounds
         if np.any([state - self.rw < 0, state + self.rw > self.height]):
             return True
         
@@ -155,11 +167,15 @@ class PlanarEnvUniform(gym.Env):
         top_next, bottom_next, left_next, right_next = self._get_pixel_location(next_state)
         x_diff = np.array([top_next - top, left_next - left], dtype=np.float32)
         
-        next_state_x = int(round(next_state[0]))
-        next_state_y = int(round(next_state[1]))
-        next_state_in_bounds = (next_state_x in range(self.height)) and (next_state_y in range(self.height))
+        ########## Valid action may still lead to out-of-bounds ##########
+        # next_state_x = int(round(next_state[0]))
+        # next_state_y = int(round(next_state[1]))
+        # next_state_in_bounds = (next_state_x in range(self.height)) and (next_state_y in range(self.height))
 
-        return (not np.sqrt(np.sum((x_diff - action)**2)) > epsilon) and next_state_in_bounds
+        # return (not np.sqrt(np.sum((x_diff - action)**2)) > epsilon) and next_state_in_bounds
+        ##################################################################
+        
+        return (not np.sqrt(np.sum((x_diff - action)**2)) > epsilon) 
 
     def _get_pixel_location(self, state):
         center_x, center_y = int(round(state[0])), int(round(state[1]))

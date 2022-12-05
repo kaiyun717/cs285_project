@@ -19,16 +19,6 @@ from data.sample_eval import sample_eval_data
 
 torch.set_default_dtype(torch.float64)
 
-
-if torch.cuda.is_available():
-  device = torch.device("cuda")
-else:
-  device = torch.device("cpu")
-
-# datasets = {'planar': datasets.MujocoDataset, 
-#             'pendulum': datasets.MujocoDataset,
-#             'cartpole': datasets.MujocoDataset,
-#             'hopper': datasets.MujocoDataset}
                                   # obs,    z,  u
 settings = {'cartpole': {'image': (64*64,   8,  1)},
             'planar':   {'image': (40*40,   8,  2)},
@@ -36,12 +26,10 @@ settings = {'cartpole': {'image': (64*64,   8,  1)},
             'hopper':   {'image': (64*64,  16,  3),
                         'serial': (11,     16,  3)}}
 
-sampler_settings = {'cartpole': (4),
-                    'planar':   (1),
-                    'pendulum': (4),
-                    'hopper':   (4)}
-
-num_eval = 10 # number of images evaluated on tensorboard
+step_sizes = {'cartpole': 4,
+             'planar':    4,
+             'pendulum':  4,
+             'hopper':    4}
 
 def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda, mse=False):
     # lower-bound loss
@@ -71,12 +59,10 @@ def train(model, train_loader, lam, optimizer):
     print("Number of batches: ", num_batches)   # debug
     print("Train Loader `batch_size`: ", train_loader.batch_size)
 
-    tt3 = 0
-    for _, (x, u, x_next) in enumerate(train_loader, 0):
+    for _, (x, u, x_next, reward, done) in enumerate(train_loader, 0):
         # x: 'before' obs in batch & stack (num_batch, obs_dim)
         # u: 'action' in batch (num_batch, action)
         # x_next: 'after' obs in batch (num_batch, obs_dim)
-        # print('data loading time', time.time() - tt3)
         
         if args.cnn:
             x = x.double().to(ptu.device)
@@ -89,7 +75,7 @@ def train(model, train_loader, lam, optimizer):
         optimizer.zero_grad()
 
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
-        # print('model time', model.encode_time + model.decode_time + model.transition_time)
+
         if args.cnn:
             x = x.view(-1, model.obs_dim)
             x_next = x_next.view(-1, model.obs_dim)
@@ -97,7 +83,6 @@ def train(model, train_loader, lam, optimizer):
             x_next_pred = x_next_pred.view(-1, model.obs_dim)
             # NOTE: what is this?
 
-        tt1 = time.time()
         loss = compute_loss(
                     x=x,                            # 'before' obs
                     x_next=x_next,                  # 'after' obs
@@ -109,14 +94,10 @@ def train(model, train_loader, lam, optimizer):
                     lamda=lam,
                     mse=args.cnn                         
                 )
-        # tt2 = time.time()
-        # print('loss time', tt2-tt1)
 
         avg_loss += loss.item()
         loss.backward()
         optimizer.step()
-        # tt3 = time.time()
-        # print('update time', tt3-tt2)
 
     return avg_loss / num_batches
 
@@ -136,7 +117,7 @@ def evaluate(model, test_loader):
     num_batches = len(test_loader)
     state_loss, next_state_loss = 0., 0.
     with torch.no_grad():
-        for x, u, x_next in test_loader:  # state, action, next_state, reward, done
+        for x, u, x_next, r, d in test_loader:  # state, action, next_state, reward, done
             if args.cnn:
                 x = x.double().to(ptu.device)
                 x_next = x_next.double().to(ptu.device)
@@ -158,15 +139,20 @@ def evaluate(model, test_loader):
     return state_loss.item() / num_batches, next_state_loss.item() / num_batches
 
 # code for visualizing the training process
-def predict_x_next(model, env, num_eval):
+def predict_x_next(model, env, num_eval, stack):
     # first sample a true trajectory from the environment
     obs_res = int(np.sqrt(settings[env]['image'][0]))
-    step_size = sampler_settings[env][0]
-    sampled_data = sample_eval_data(env=env, sample_size=num_eval, obs_res=obs_res, step_size=step_size)
-
+    step_size = step_sizes[env]
+    sampled_data = sample_eval_data(env_name=env, sample_size=num_eval, 
+                                    obs_res=obs_res, stack=stack, 
+                                    step_size=step_size)
+    print(sampled_data)
     # use the trained model to predict the next observation
     predicted = []
     for x, u, x_next in sampled_data:
+        print(x.shape)
+        print(u.shape)
+        print(x_next.shape)
         x_reshaped = x.reshape(-1)
         x_reshaped = torch.from_numpy(x_reshaped).double().unsqueeze(dim=0).to(ptu.device)
         u = torch.from_numpy(u).double().unsqueeze(dim=0).to(ptu.device)
@@ -176,8 +162,8 @@ def predict_x_next(model, env, num_eval):
     true_x_next = [data[-1] for data in sampled_data]
     return true_x_next, predicted
 
-def plot_preds(model, env, num_eval):
-    true_x_next, pred_x_next = predict_x_next(model, env, num_eval)
+def plot_preds(model, env, num_eval, stack):
+    true_x_next, pred_x_next = predict_x_next(model, env, num_eval, stack)
 
     # plot the predicted and true observations
     fig, axes =plt.subplots(nrows=2, ncols=num_eval)
@@ -209,7 +195,7 @@ def main(args):
     iter_save = args.iter_save
     exp_name = args.log_dir
     seed = args.seed
-    stack = args.stack 
+    stack = args.stack
 
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -256,18 +242,13 @@ def main(args):
         json.dump(hparameter, f, indent=2)
 
     for i in range(epoches):
-        # t1 = time.time()
         avg_loss = train(model, train_loader, lam, optimizer)
         print('Epoch %d' % i)
         print("Training loss: %f" % (avg_loss))
-        # t2 = time.time()
-        # print('Time elapsed for training', t2-t1)
         # evaluate on test set
         state_loss, next_state_loss = evaluate(model, test_loader)
         print('State loss: ' + str(state_loss))
         print('Next state loss: ' + str(next_state_loss))
-        # t3 = time.time()
-        # print('Time elapsed for evaluating', t3-t2)
 
         # ...log the running loss
         writer.add_scalar('training_loss', avg_loss, i)
@@ -275,9 +256,10 @@ def main(args):
         writer.add_scalar('next_state_loss', next_state_loss, i)
 
         # save model
+        num_eval = 10 # number of images evaluated on tensorboard
         if (i + 1) % iter_save == 0:
             writer.add_figure('actual vs. predicted observations',
-                              plot_preds(model, env_name, num_eval),
+                              plot_preds(model, env_name, num_eval, stack),
                               global_step=i)
             print('Saving the model.............')
 

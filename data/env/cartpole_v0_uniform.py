@@ -34,32 +34,5 @@ class CartPoleEnvUniform(CartPoleEnv):
         else:
             return np.array(self.state, dtype=np.float32), {}
 
-
-if __name__ == '__main__':
-    import gym
-    import numpy as np
-    
-    # env = gym.make('CartPole-v0')
-    # env.reset()
-    # count = np.zeros((4,))
-    # dones = 0
-    # for _ in range(10000):
-    #     ac = env.action_space.sample()
-    #     s, r, d, i = env.step(ac)
-
-    #     if s[0] > 2.3 or s[0] < -2.3:
-    #         count[0] += 1
-    #     if s[1] > 10 or s[1] < -10:
-    #         count[1] += 1
-    #     if d:
-    #         # print('DONE')
-    #         dones += 1
-    #         env.reset()
-
-    # print(count)
-    # print(dones)
-
-    h = np.array([3,4,5,6])
-    l = -h
-    for _ in range(10):
-        print(np.random.uniform(l, h))
+    def get_valid_random_action(self):
+        return self.action_space.sample()

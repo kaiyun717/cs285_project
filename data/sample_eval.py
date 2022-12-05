@@ -8,7 +8,9 @@ import pandas as pd
 from datetime import datetime
 import argparse
 import cv2
+from torchvision.transforms import ToTensor
 
+import torch
 import gym
 from gym.envs.registration import register
 from gym.envs.registration import registry
@@ -16,10 +18,30 @@ from gym.envs.registration import registry
 def opencv_downsample(image: np.ndarray, out_size: tuple):
     resized = cv2.resize(image, dsize=out_size, interpolation=cv2.INTER_CUBIC)
     return resized
+
+def process_eval_data(eval_data, sample_size, stack):
+    processed = []
+    for i in range(stack-1, sample_size):
+        before = []
+        after = []
+
+        for t in reversed(range(stack)):
+            b_idx = i - t
+            before.append(eval_data[b_idx][0])
+            after.append(eval_data[b_idx][2])
+            # before.append(process_image(temp_before))
+            # after.append(process_image(temp_after))
         
+        processed.append((torch.cat(tuple(before)),
+                          np.array(eval_data[i][1]),
+                          torch.cat(tuple(after))))
+    
+    return processed
+
 def sample_eval_data(env_name,
                      sample_size, 
                      obs_res=64,
+                     stack=1,
                      step_size=4):
 
     if env_name == 'hopper':
@@ -62,11 +84,8 @@ def sample_eval_data(env_name,
 
     env = gym.make(ENV_NAME)
 
-    obs_size = env.observation_space.shape[0]
-    act_size = env.action_space.shape[0]
-
     samples = []
-    for i in trange(sample_size):
+    for _ in range(sample_size):
         state = env.reset() # Reset everystep
         
         before = env.render(mode='rgb_array')
@@ -87,8 +106,14 @@ def sample_eval_data(env_name,
 
         after = env.render(mode='rgb_array')
 
-        before = opencv_downsample(before, (obs_res, obs_res))
-        after = opencv_downsample(after, (obs_res, obs_res))
+        print('RENDERED BEFORE: ', before.shape)
+
+        before = before.convert('L')
+        after = before.convert('L')
+
+        before = ToTensor()((opencv_downsample(before, (obs_res, obs_res))))
+        after = ToTensor()((opencv_downsample(after, (obs_res, obs_res))))
         samples.append((before, u, after))
     
-    return samples
+    processed_samples = process_eval_data(samples, sample_size, stack)
+    return processed_samples

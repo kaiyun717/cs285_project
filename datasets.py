@@ -72,8 +72,6 @@ class MujocoDataset(Dataset):
 
     def _process_obs_image(self) -> list:
         processed = []
-        print(self.stack)
-        print(len(self))
         for i in trange(self.stack-1, len(self), 
                         desc='processing image data'):
 
@@ -88,9 +86,9 @@ class MujocoDataset(Dataset):
                 # i = 96, 97, 98, 99 
                 b_idx = i - t       # before
                 # a_idx = i - t + 1   # after
-                temp_before = Image.open(os.path.join(self.dir, 
+                temp_before = Image.open(os.path.join(self.dir,
                                             f'before-{str(b_idx).zfill(6)}.jpg'))
-                temp_after = Image.open(os.path.join(self.dir, 
+                temp_after = Image.open(os.path.join(self.dir,
                                             f'after-{str(b_idx).zfill(6)}.jpg'))
                 before.append(self._process_image(temp_before))
                 after.append(self._process_image(temp_after))

@@ -29,3 +29,6 @@ class PendulumEnvUniform(PendulumEnv):
             return self._get_obs()
         else:
             return self._get_obs(), {}
+    
+    def get_valid_random_action(self):
+        return self.action_space.sample()

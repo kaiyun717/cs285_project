@@ -25,21 +25,24 @@ class HopperEnvUniform(HopperEnv):
         qpos = np.array([
             # np.random.uniform(1, 5), # x-pos
             0,
-            np.random.uniform(0.8, 1.5), # 0. [healthy_z_range] : rootz (pos)
-            np.random.uniform(self._healthy_angle_range[0]/3, self._healthy_angle_range[1]/3), # 1. [healthy_angle_range] : rooty (ang)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 2. [healthy_state_range] : thigh_joint (ang)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 3. [healthy_state_range] : leg_joint (ang)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 4. [healthy_state_range] : foot_joint (ang)
+            np.random.uniform(0.8, 1.5), # 0. [healthy_z_range] : rootz (pos: m)
+            np.random.uniform(self._healthy_angle_range[0]/2, self._healthy_angle_range[1]/2), # 1. [healthy_angle_range] : rooty (ang: rad)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 2. [healthy_state_range] : thigh_joint (ang: rad)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 3. [healthy_state_range] : leg_joint (ang: rad)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 4. [healthy_state_range] : foot_joint (ang: rad)
         ])
         qvel = np.array([
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 5. [healthy_state_range] : rootxz (vel)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 6. [healthy_state_range] : rootz (vel)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 7. [healthy_state_range] : rooty (ang vel)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 8. [healthy_state_range] : thigh_joint (ang vel)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), # 9. [healthy_state_range] : leg_joint (ang vel)
-            np.random.uniform(self._healthy_state_range[0]/3, self._healthy_state_range[1]/3), #10. [healthy_state_range] :  foot_joint (ang vel)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 5. [healthy_state_range] : rootxz (vel: m/s)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 6. [healthy_state_range] : rootz (vel: m/s)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 7. [healthy_state_range] : rooty (ang vel: rad/s)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 8. [healthy_state_range] : thigh_joint (ang vel: rad/s)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), # 9. [healthy_state_range] : leg_joint (ang vel: rad/s)
+            np.random.uniform(self._healthy_state_range[0]/33, self._healthy_state_range[1]/33), #10. [healthy_state_range] :  foot_joint (ang vel: rad/s)
         ])
         self.set_state(qpos, qvel)
 
         observation = self._get_obs()
         return observation
+    
+    def get_valid_random_action(self):
+        return self.action_space.sample()/3
