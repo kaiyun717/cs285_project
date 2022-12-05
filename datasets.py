@@ -89,9 +89,9 @@ class MujocoDataset(Dataset):
                 b_idx = i - t       # before
                 # a_idx = i - t + 1   # after
                 temp_before = Image.open(os.path.join(self.dir, 
-                                            f'before-{str(b_idx).zfill(5)}.jpg'))
+                                            f'before-{str(b_idx).zfill(6)}.jpg'))
                 temp_after = Image.open(os.path.join(self.dir, 
-                                            f'after-{str(b_idx).zfill(5)}.jpg'))
+                                            f'after-{str(b_idx).zfill(6)}.jpg'))
                 before.append(self._process_image(temp_before))
                 after.append(self._process_image(temp_after))
 
@@ -102,7 +102,8 @@ class MujocoDataset(Dataset):
             processed.append((torch.cat(tuple(before)),
                               np.array(self.dataframe.loc[i, 'action']),
                               torch.cat(tuple(after)),
-                              np.array(self.dataframe.loc[i, 'reward'])))
+                              np.array(self.dataframe.loc[i, 'reward']),
+                              np.array(self.dataframe.loc[i, 'done'])))
         return processed
 
     def _process_obs_serial(self) -> list:
