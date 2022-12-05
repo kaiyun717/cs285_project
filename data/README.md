@@ -10,7 +10,7 @@
 - Done conditions are as follow:
     - True: collision, out-of-bounds, reached
     - False: else
-- If the state is out-of-bounds, the state is simply not rendered. The agent should learn that this state is undesirable from the reward.
+- If the state is out-of-bounds, the position of the agent is not included in the rendered image. The agent should learn that this state is undesirable from the reward.
 
 ### Hopper
 - `healthy_angle_range` = [-0.2, 0.2]
