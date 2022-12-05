@@ -1,5 +1,7 @@
+import datetime
 from tensorboardX import SummaryWriter
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import argparse
@@ -16,24 +18,51 @@ torch.set_default_dtype(torch.float64)
 
 device = torch.device("cuda")
 datasets = {'planar': PlanarDataset, 'pendulum': GymPendulumDatasetV2}
-settings = {'planar': (1600, 2, 2), 'pendulum': (4608, 3, 1)}
+settings = {'planar': (1600, 4, 2, 4), 'pendulum': (4608, 3, 1, 4)}
 samplers = {'planar': planar_sampler, 'pendulum': pendulum_sampler, 'cartpole': cartpole_sampler}
 num_eval = 10 # number of images evaluated on tensorboard
 
-# dataset = datasets['planar']('./data/data/' + 'planar')
-# x, u, x_next = dataset[0]
-# imgplot = plt.imshow(x.squeeze(), cmap='gray')
-# plt.show()
-# print (np.array(u, dtype=float))
-# imgplot = plt.imshow(x_next.squeeze(), cmap='gray')
-# plt.show()
+def compute_jac_loss(q_z, u_t, model):
+    h_t = model.forward_h(q_z.mean)
+    A_t, v, r = model.forward_A(h_t=h_t, return_vr=True)
+    B_t = model.forward_B(h_t=h_t)
 
-def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda):
+    G_t = model.forward_G(h_t=h_t)
+    H_t = model.forward_H(h_t=h_t)
+
+    device = q_z.mean.device
+
+    # jacobian loss
+    zbar = q_z.mean
+    dz = torch.randn(zbar.shape, device=device) * 0.3
+    du = torch.randn(u_t.shape, device=device) * 0.3
+    zhat = zbar + dz
+    uhat = u_t + du
+    dz_next_jac = A_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + B_t.bmm(du.unsqueeze(-1)).squeeze(-1)
+    _, z_next_true, z_residual = model.forward(q_z.mean, q_z, uhat)
+    _, zhat_next_true, zhat_residual = model.forward(zbar, NormalDistribution(zhat, q_z.logvar), uhat)
+    zhat_next_jac = NormalDistribution(z_next_true.mean + dz_next_jac, q_z.logvar, A=A_t, v=v.squeeze(), r=r.squeeze())
+    dresidual_jac = G_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + H_t.bmm(du.unsqueeze(-1)).squeeze(-1)
+
+    loss_dyn = NormalDistribution.KL_divergence(
+        zhat_next_jac,
+        zhat_next_true,
+    )
+    loss_res = F.mse_loss(z_residual + dresidual_jac, zhat_residual)
+    return 10 * loss_dyn + loss_res, {'jac_dyn': loss_dyn.item(), 'jac_res': loss_res.item()}
+
+
+def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda, cost, cost_pred, A_t=None, B_t=None, u_t=None, recon_loss='bce'):
+    if recon_loss == 'bce':
+        recon_loss = torch.nn.BCELoss(reduction='none')
+    elif recon_loss == 'mse':
+        recon_loss = torch.nn.MSELoss(reduction='none')
+    elif recon_loss == 'l1':
+        recon_loss = torch.nn.L1Loss(reduction='none')
+
     # lower-bound loss
-    recon_term = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
-                                       + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
-    pred_loss = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
-                                      + (1 - x_next) * torch.log(1e-5 + 1 - x_next_pred), dim=1))
+    recon_term = recon_loss(x_recon, x).sum(dim=1).mean(dim=0)
+    pred_loss = recon_loss(x_next_pred, x_next).sum(dim=1).mean(dim=0)
 
     kl_term = - 0.5 * torch.mean(torch.sum(1 + q_z.logvar - q_z.mean.pow(2) - q_z.logvar.exp(), dim = 1))
 
@@ -41,34 +70,46 @@ def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, 
 
     # consistency loss
     consis_term = NormalDistribution.KL_divergence(q_z_next_pred, q_z_next)
-    return lower_bound + lamda * consis_term
 
-def train(model, train_loader, lam, optimizer):
+    cost_term = F.mse_loss(cost_pred, cost)
+
+    return lower_bound + lamda * consis_term + cost_term, {'recon': recon_term.item(), 'pred': pred_loss.item(), 'kl': kl_term.item(), 'consis': consis_term.item(), 'cost': cost_term.item()}
+
+def train(model, train_loader, lam, optimizer, writer, global_step):
     model.train()
     avg_loss = 0.0
 
     num_batches = len(train_loader)
     for i, (x, u, x_next) in enumerate(train_loader, 0):
-        x = x.view(-1, model.obs_dim).double().to(device)
-        u = u.double().to(device)
-        x_next = x_next.view(-1, model.obs_dim).double().to(device)
+        # TODO: Load cost in train_loader
+
+        x = x.view(-1, model.obs_dim).to(device)
+        u = u.to(device)
+        cost = torch.zeros(x.shape[0]).to(device)
+        x_next = x_next.view(-1, model.obs_dim).to(device)
         optimizer.zero_grad()
 
-        x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
+        x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_pred = model(x, u, x_next)
 
-        loss = compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lam)
+        loss, metrics = compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lam, cost, cost_pred)
+        loss_jac, metrics_jac = compute_jac_loss(q_z, u, model.trans)
+        metrics = {**metrics, **metrics_jac}
+
+        loss += loss_jac
 
         avg_loss += loss.item()
         loss.backward()
         optimizer.step()
 
+        if (i + 1) % 100 == 0:
+            for key, value in metrics.items():
+                writer.add_scalar(f"train/{key}", value, global_step * num_batches + i)
+
     return avg_loss / num_batches
 
 def compute_log_likelihood(x, x_recon, x_next, x_next_pred):
-    loss_1 = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
-                                   + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
-    loss_2 = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
-                                   + (1 - x_next) * torch.log(1e-5 + 1 - x_next_pred), dim=1))
+    loss_1 = torch.nn.BCELoss(reduction='none')(x_recon, x).sum(dim=1).mean(dim=0)
+    loss_2 = torch.nn.BCELoss(reduction='none')(x_next_pred, x_next).sum(dim=1).mean(dim=0)
     return loss_1, loss_2
 
 def evaluate(model, test_loader):
@@ -77,11 +118,11 @@ def evaluate(model, test_loader):
     state_loss, next_state_loss = 0., 0.
     with torch.no_grad():
         for x, u, x_next in test_loader:
-            x = x.view(-1, model.obs_dim).double().to(device)
-            u = u.double().to(device)
-            x_next = x_next.view(-1, model.obs_dim).double().to(device)
+            x = x.view(-1, model.obs_dim).to(device)
+            u = u.to(device)
+            x_next = x_next.view(-1, model.obs_dim).to(device)
 
-            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
+            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_pred = model(x, u, x_next)
             loss_1, loss_2 = compute_log_likelihood(x, x_recon, x_next, x_next_pred)
             state_loss += loss_1
             next_state_loss += loss_2
@@ -98,10 +139,10 @@ def predict_x_next(model, env, num_eval):
     predicted = []
     for x, u, x_next in sampled_data:
         x_reshaped = x.reshape(-1)
-        x_reshaped = torch.from_numpy(x_reshaped).double().unsqueeze(dim=0).to(device)
-        u = torch.from_numpy(u).double().unsqueeze(dim=0).to(device)
+        x_reshaped = torch.from_numpy(x_reshaped).unsqueeze(dim=0).to(device)
+        u = torch.from_numpy(u).unsqueeze(dim=0).to(device)
         with torch.no_grad():
-            x_next_pred = model.predict(x_reshaped, u)
+            x_next_pred, _ = model.predict(x_reshaped, u)
         predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(sampler.width, sampler.height))
     true_x_next = [data[-1] for data in sampled_data]
     return true_x_next, predicted
@@ -142,17 +183,17 @@ def main(args):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    dataset = datasets[env_name]('./data/data/' + env_name)
+    dataset = datasets[env_name]('data/data/' + env_name)
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=8)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=8)
 
-    obs_dim, z_dim, u_dim = settings[env_name]
-    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, env=env_name).to(device)
+    obs_dim, z_dim, u_dim, r_dim = settings[env_name]
+    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, r_dim=r_dim, env=env_name).to(device)
 
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), eps=1e-8, lr=lr, weight_decay=weight_decay)
 
-    writer = SummaryWriter('logs/' + env_name + '/' + log_dir)
+    writer = SummaryWriter('logs/' + env_name + '/' + log_dir + '/' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     result_path = './result/' + env_name + '/' + log_dir
     if not path.exists(result_path):
@@ -161,7 +202,7 @@ def main(args):
         json.dump(args.__dict__, f, indent=2)
 
     for i in range(epoches):
-        avg_loss = train(model, train_loader, lam, optimizer)
+        avg_loss = train(model, train_loader, lam, optimizer, writer, global_step=i)
         print('Epoch %d' % i)
         print("Training loss: %f" % (avg_loss))
         # evaluate on test set
@@ -170,9 +211,9 @@ def main(args):
         print('Next state loss: ' + str(next_state_loss))
 
         # ...log the running loss
-        writer.add_scalar('training loss', avg_loss, i)
-        writer.add_scalar('state loss', state_loss, i)
-        writer.add_scalar('next state loss', next_state_loss, i)
+        writer.add_scalar('eval/training loss', avg_loss, i)
+        writer.add_scalar('eval/state loss', state_loss, i)
+        writer.add_scalar('eval/next state loss', next_state_loss, i)
 
         # save model
         if (i + 1) % iter_save == 0:

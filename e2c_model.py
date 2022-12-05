@@ -6,19 +6,20 @@ from networks import *
 torch.set_default_dtype(torch.float64)
 
 class E2C(nn.Module):
-    def __init__(self, obs_dim, z_dim, u_dim, env = 'planar'):
+    def __init__(self, obs_dim, z_dim, u_dim, r_dim, env = 'planar'):
         super(E2C, self).__init__()
         enc, dec, trans = load_config(env)
 
         self.obs_dim = obs_dim
         self.z_dim = z_dim
         self.u_dim = u_dim
+        self.r_dim = r_dim
 
         self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim)
         # self.encoder.apply(init_weights)
         self.decoder = dec(z_dim=z_dim, obs_dim=obs_dim)
         # self.decoder.apply(init_weights)
-        self.trans = trans(z_dim=z_dim, u_dim=u_dim)
+        self.trans = trans(z_dim=z_dim, u_dim=u_dim, r_dim=r_dim)
         # self.trans.apply(init_weights)
 
     def encode(self, x):
@@ -56,21 +57,22 @@ class E2C(nn.Module):
 
         x_recon = self.decode(z)
 
-        z_next, q_z_next_pred = self.transition(z, q_z, u)
+        z_next, q_z_next_pred, cost_residual = self.transition(z, q_z, u)
+        cost = cost_residual.pow(2).sum(dim=-1)
 
         x_next_pred = self.decode(z_next)
 
         mu_next, logvar_next = self.encode(x_next)
         q_z_next = NormalDistribution(mean=mu_next, logvar=logvar_next)
 
-        return x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next
+        return x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost
 
     def predict(self, x, u):
         mu, logvar = self.encoder(x)
         z = self.reparam(mu, logvar)
         q_z = NormalDistribution(mu, logvar)
 
-        z_next, q_z_next_pred = self.transition(z, q_z, u)
+        z_next, q_z_next_pred, cost = self.transition(z, q_z, u)
 
         x_next_pred = self.decode(z_next)
-        return x_next_pred
+        return x_next_pred, cost
