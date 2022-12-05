@@ -16,7 +16,7 @@
 - `healthy_angle_range` = [-0.2, 0.2]
 - `healthy_state_range` = [-100.0, 100.0]
 
-If given full range, Hopper dies basically after each reset. Then it's impossible to do frame-skipping. Thus, I tuned the reset state to be like the following:
+If given full range, Hopper dies basically in one step after reset. Then it's impossible to do frame-skipping. Thus, I tuned the reset state to be like the following:
 (X-position shouldn't really matter since the objective is to have the Hopper standing.)
 
 ```python
@@ -39,7 +39,7 @@ qvel = np.array([
 ])
 ```
 
-Random action is also sampled from a smaller state since too big of an action may instantly kill the Hopper agent.
+Random action is also sampled from a smaller range since too big of an action may instantly kill the Hopper agent.
 ```python
 def get_valid_random_action(self):
     return self.action_space.sample()/3
@@ -47,10 +47,10 @@ def get_valid_random_action(self):
 
 
 ## Sampling Structure
-- Reset is done every `reset_steps`, which is a parameter passed into the sampler. Recommended is at least 200. If you reset too often between steps (smaller `reset_steps`), then it may be difficult to stack them.
+- Reset is done every `reset_steps`, which is a parameter passed into the sampler. Recommended is at least 100. If you reset too often between steps (smaller `reset_steps`), then it may be difficult to stack them.
 - If the done condition is met while frame-skipping is performed, then that sample is discarded. I.e., the sample is saved only if frame-skipping is conducted without done condition is met. Env is reset in such situation.
 - If the entirety of frame-skipping is performed, then that sample is saved. If done is met after frame-skipping completes, then env is reset. 
-- `serial` option saves the rendered images as np.ndarray in dataframe. The saved np.ndarray is that of after `downsampling` and `rgb2gray` is performed. **This is the recommended method of sampling since it does not save image files, which can be quite heavy.**
+- `serial` option saves the rendered images as np.ndarray in dataframe. The saved np.ndarray is that of after `downsampling` and `rgb2gray` are performed. **This is the recommended method of sampling since it does not save image files, which can be quite heavy.**
 
 - Recommended `step_size` for all the environments is 4.
 
