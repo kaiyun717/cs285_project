@@ -18,21 +18,12 @@ from data.sample_eval import sample_eval_data
 
 torch.set_default_dtype(torch.float64)
 
-# if torch.cuda.is_available():
-#   device = torch.device("cuda")
-# else:
-#   device = torch.device("cpu")
-
-datasets = {'planar': datasets.MujocoDataset, 
-            'pendulum': datasets.MujocoDataset,
-            'cartpole': datasets.MujocoDataset,
-            'hopper': datasets.MujocoDataset}
-                                  # obs,  z,   u
-settings = {'cartpole': {'image': (64*64,    3,  1)},
-            'planar':   {'image': (40*40,    2,  2)},
-            'pendulum': {'image': (48*48,   3,   1)},
-            'hopper':   {'image': (64*64, 512,   3),
-                        'serial': (11,      2,   3)}}
+                                  # obs,    z,  u
+settings = {'cartpole': {'image': (64*64,   8,  1)},
+            'planar':   {'image': (40*40,   8,  2)},
+            'pendulum': {'image': (48*48,   8,  1)},
+            'hopper':   {'image': (64*64,  16,  3),
+                        'serial': (11,     16,  3)}}
 
 sampler_settings = {'cartpole': (4),
                     'planar':   (1),
@@ -206,16 +197,11 @@ def main(args):
     torch.manual_seed(seed)
     ptu.init_gpu(use_gpu=args.gpu)
 
-    if env_name not in ['planar', 'cartpole']:  # MuJoCo Datasets & Pendulum
-        dataset = datasets[env_name](
-            dir='./data/samples/' + env_name + '/' + sample_path,
-            stack=stack
-        )
-    else:
-        dataset = datasets[env_name](
-            dir='./data/samples/' + env_name + '/' + sample_path,
-        )
-    
+    dataset = datasets.MujocoDataset(
+        dir='./data/samples/' + env_name + '/' + sample_path,
+        stack=stack
+    )
+
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
     train_loader = DataLoader(train_set, batch_size=batch_size, 
                               shuffle=True, drop_last=False, num_workers=8)
