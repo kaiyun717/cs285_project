@@ -1,12 +1,13 @@
+from functools import partial
 import torch
 from torch import nn
 from normal import NormalDistribution
 
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 
-def weights_init(m):
+def weights_init(m, gain=1):
     if type(m) in [nn.Conv2d, nn.Linear, nn.ConvTranspose2d]:
-        torch.nn.init.orthogonal_(m.weight)
+        torch.nn.init.orthogonal_(m.weight, gain=gain)
 
 class Encoder(nn.Module):
     def __init__(self, net, obs_dim, z_dim):
@@ -50,10 +51,10 @@ class Transition(nn.Module):
         self.r_dim = r_dim
 
         self.fc_A = nn.Sequential(
-            nn.Linear(self.h_dim, self.z_dim * self.z_dim), # v_t and r_t
+            nn.Linear(self.h_dim, self.z_dim * self.z_dim),
             nn.Tanh()
         )
-        self.fc_A.apply(weights_init)
+        self.fc_A.apply(partial(weights_init, gain=0.1))
 
         self.fc_B = nn.Linear(self.h_dim, self.z_dim * self.u_dim)
         torch.nn.init.orthogonal_(self.fc_B.weight)
@@ -70,20 +71,13 @@ class Transition(nn.Module):
     def forward_h(self, z_bar_t):
         return self.net(z_bar_t)
 
-    def forward_A(self, z_bar_t=None, h_t=None, return_vr=False):
+    def forward_A(self, z_bar_t=None, h_t=None):
         if h_t is None:
             h_t = self.forward_h(z_bar_t)
 
-        # v_t, r_t = self.fc_A(h_t).chunk(2, dim=1)
-        # v_t = torch.unsqueeze(v_t, dim=-1)
-        # r_t = torch.unsqueeze(r_t, dim=-2)
-        # A_t = torch.eye(self.z_dim)[None].cuda() + torch.bmm(v_t, r_t)
-        A_t = self.fc_A(h_t).view(-1, self.z_dim, self.z_dim)
+        A_t = torch.eye(self.z_dim, device=h_t.device) + self.fc_A(h_t).view(-1, self.z_dim, self.z_dim) * 0.1
 
-        if return_vr:
-            return A_t, torch.zeros_like(A_t[:, :, :1]), torch.zeros_like(A_t[:, :1, :])
-        else:
-            return A_t
+        return A_t
 
     def forward_B(self, z_bar_t=None, h_t=None):
         if h_t is None:
@@ -133,7 +127,7 @@ class Transition(nn.Module):
         """
         h_t = self.forward_h(z_bar_t)
 
-        A_t, v_t, r_t = self.forward_A(h_t=h_t, return_vr=True)
+        A_t = self.forward_A(h_t=h_t)
         B_t = self.forward_B(h_t=h_t)
         o_t = self.forward_o(h_t=h_t)
 
@@ -146,7 +140,7 @@ class Transition(nn.Module):
         mean = A_t.bmm(mu_t.unsqueeze(-1)).squeeze(-1) + B_t.bmm(u_t.unsqueeze(-1)).squeeze(-1) + o_t
         cost_residual = G_t.bmm(mu_t.unsqueeze(-1)).squeeze(-1) + H_t.bmm(u_t.unsqueeze(-1)).squeeze(-1) + j_t
 
-        return mean, NormalDistribution(mean, logvar=q_z_t.logvar, v=v_t.squeeze(), r=r_t.squeeze(), A=A_t), cost_residual
+        return mean, NormalDistribution(mean, logvar=q_z_t.logvar, A=A_t), cost_residual, (A_t, B_t, o_t, G_t, H_t, j_t)
 
 class PlanarEncoder(Encoder):
     def __init__(self, obs_dim = 1600, z_dim = 2):

@@ -9,7 +9,7 @@ from tqdm import tqdm
 import pickle
 import torch
 
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 
 class PlanarDataset(Dataset):
     width = 40
