@@ -1,31 +1,44 @@
 from collections import defaultdict
 import datetime
 from tensorboardX import SummaryWriter
+import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import argparse
 import sys
+import numpy as np
+import time
+from utils import pytorch_utils as ptu
 
-from normal import *
+import os
+import json
+from normal import NormalDistribution
 from e2c_model import E2C
-from datasets import *
-import data.sample_planar as planar_sampler
-import data.sample_pendulum_data as pendulum_sampler
-import data.sample_cartpole_data as cartpole_sampler
 from tqdm import tqdm
+import datasets
+from data.sample_eval import sample_eval_data
 
 torch.set_default_dtype(torch.float32)
 
 device = torch.device("cuda")
-datasets = {'planar': PlanarDataset, 'pendulum': GymPendulumDatasetV2}
-settings = {'planar': (1600, 4, 2, 4), 'pendulum': (4608, 3, 1, 4)}
-samplers = {'planar': planar_sampler, 'pendulum': pendulum_sampler, 'cartpole': cartpole_sampler}
+                                  # obs,    z,  u
+settings = {'cartpole': {'image': (64*64,   8,  1,  3)},
+            'planar':   {'image': (40*40,   8,  2,  3)},
+            'pendulum': {'image': (48*48,   8,  1,  4)},
+            'hopper':   {'image': (64*64,  16,  3,  8),
+                        'serial': (11,     16,  3,  8)}}
+
+step_sizes = {'cartpole': 4,
+             'planar':    4,
+             'pendulum':  4,
+             'hopper':    4}
+
 num_eval = 10 # number of images evaluated on tensorboard
 
 
-def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, transition_model, z_residual, dyn_mats, hparams, recon_loss='bce'):
+def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, transition_model, z_residual, dyn_mats, args, recon_loss='bce'):
     if recon_loss == 'bce':
         recon_loss = torch.nn.BCELoss(reduction='none')
     elif recon_loss == 'mse':
@@ -66,7 +79,7 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
     ).sum(dim=-1)
     jac_loss_res = F.mse_loss(z_residual + dresidual_jac, zhat_residual)
 
-    results = lower_bound + hparams.lam * consis_term + cost_term + hparams.jac_weight * (jac_loss_dyn + jac_loss_res), {
+    results = lower_bound + args.lam * consis_term + cost_term + args.jac_weight * (jac_loss_dyn + jac_loss_res), {
         'recon': recon_term.item(),
         'pred': pred_loss.item(),
         'kl': kl_term.item(),
@@ -80,28 +93,60 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
     }
     return results
 
-def train(model, train_loader, optimizer, global_step, hparams):
+def train(model, train_loader, optimizer, global_step, args):
     model.train()
     avg_loss = 0.0
 
     metrics = defaultdict(float)
 
     num_batches = len(train_loader)
-    for i, (x, u, x_next) in tqdm(enumerate(train_loader, 0), total=num_batches):
-        # TODO: Load cost in train_loader
-        x = x.float()
-        u = u.float()
-        x_next = x_next.float()
 
-        x = x.view(-1, model.obs_dim).to(device)
-        u = u.to(device)
-        cost = torch.zeros(x.shape[0]).to(device)
-        x_next = x_next.view(-1, model.obs_dim).to(device)
+    print("Number of batches: ", num_batches)   # debug
+    print("Train Loader `batch_size`: ", train_loader.batch_size)
+
+    for _, (x, u, x_next, reward, done) in tqdm(enumerate(train_loader, 0), total=num_batches):
+        # x: 'before' obs in batch & stack (num_batch, obs_dim)
+        # u: 'action' in batch (num_batch, action)
+        # x_next: 'after' obs in batch (num_batch, obs_dim)
+        
+        if args.cnn:
+            x = x.float().to(ptu.device)
+            x_next = x_next.float().to(ptu.device)
+        else:
+            x = x.view(-1, model.obs_dim).float().to(ptu.device)
+            x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
+            
+        u = u.float().to(ptu.device)
         optimizer.zero_grad()
 
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
         cost_pred = cost_res_pred.pow(2).sum(dim=1)
-        loss, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, hparams)
+        loss, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, args)
+
+        if args.cnn:
+            x = x.view(-1, model.obs_dim)
+            x_next = x_next.view(-1, model.obs_dim)
+            x_recon = x_recon.view(-1, model.obs_dim)
+            x_next_pred = x_next_pred.view(-1, model.obs_dim)
+            # NOTE: what is this?
+
+        cost = -reward.float().to(ptu.device)
+
+        loss = compute_loss(
+                    x=x,                            # 'before' obs
+                    x_next=x_next,                  # 'after' obs
+                    q_z_next=q_z_next,              # q(z_next|x_next) distrubtion
+                    x_recon=x_recon,                # decoded(z)
+                    x_next_pred=x_next_pred,        # decoded(z_next)
+                    q_z=q_z,                        # q(z|x) distribution
+                    q_z_next_pred=q_z_next_pred,    # transition in latent space
+                    cost=cost,
+                    cost_pred=cost_pred,
+                    model=model.trans,
+                    cost_res_pred=cost_res_pred,
+                    dyn_mats=dyn_mats,
+                    args=args
+                )
 
         avg_loss += loss.item()
         loss.backward()
@@ -112,54 +157,65 @@ def train(model, train_loader, optimizer, global_step, hparams):
 
     return avg_loss / num_batches, {key: value / num_batches for key, value in metrics.items()}
 
-def compute_log_likelihood(x, x_recon, x_next, x_next_pred):
-    loss_1 = torch.nn.BCELoss(reduction='none')(x_recon, x).sum(dim=1).mean(dim=0)
-    loss_2 = torch.nn.BCELoss(reduction='none')(x_next_pred, x_next).sum(dim=1).mean(dim=0)
-    return loss_1, loss_2
 
-def evaluate(model, test_loader, hparams):
+def evaluate(model, test_loader, args):
     model.eval()
     num_batches = len(test_loader)
     metrics = defaultdict(float)
     with torch.no_grad():
-        for x, u, x_next in test_loader:
-            x = x.float()
-            u = u.float()
-            x_next = x_next.float()
+        for x, u, x_next, r, d in test_loader:  # state, action, next_state, reward, done
+            if args.cnn:
+                x = x.float().to(ptu.device)
+                x_next = x_next.float().to(ptu.device)
+            else:
+                x = x.view(-1, model.obs_dim).float().to(ptu.device)
+                x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
+            u = u.float().to(ptu.device)
 
-            cost = torch.zeros(x.shape[0]).to(device)
-            x = x.view(-1, model.obs_dim).to(device)
-            u = u.to(device)
-            x_next = x_next.view(-1, model.obs_dim).to(device)
+            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
+            if args.cnn:
+                x = x.view(-1, model.obs_dim)
+                x_next = x_next.view(-1, model.obs_dim)
+                x_recon = x_recon.view(-1, model.obs_dim)
+                x_next_pred = x_next_pred.view(-1, model.obs_dim)
+            loss_1, loss_2 = compute_log_likelihood(x, x_recon, x_next, x_next_pred, mse=args.cnn)
+            state_loss += loss_1
+            next_state_loss += loss_2
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
             cost_pred = cost_res_pred.pow(2).sum(dim=1)
-            _, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, hparams)
+            _, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, args)
             for key, value in metrics_it.items():
                 metrics[key] += value
 
     return {key: value / num_batches for key, value in metrics.items()}
 
 # code for visualizing the training process
-def predict_x_next(model, env, num_eval):
-    # frist sample a true trajectory from the environment
-    sampler = samplers[env]
-    state_samples, sampled_data = sampler.sample(num_eval)
-
+def predict_x_next(model, env, num_eval, stack):
+    # first sample a true trajectory from the environment
+    obs_res = int(np.sqrt(settings[env]['image'][0]))
+    step_size = step_sizes[env]
+    sampled_data = sample_eval_data(env_name=env, sample_size=num_eval, 
+                                    obs_res=obs_res, stack=stack, 
+                                    step_size=step_size)
+    print(sampled_data)
     # use the trained model to predict the next observation
     predicted = []
     for x, u, x_next in sampled_data:
+        print(x.shape)
+        print(u.shape)
+        print(x_next.shape)
         x_reshaped = x.reshape(-1)
-        x_reshaped = torch.from_numpy(x_reshaped).float().unsqueeze(dim=0).to(device)
-        u = torch.from_numpy(u).float().unsqueeze(dim=0).to(device)
+        x_reshaped = torch.from_numpy(x_reshaped).float().unsqueeze(dim=0).to(ptu.device)
+        u = torch.from_numpy(u).float().unsqueeze(dim=0).to(ptu.device)
         with torch.no_grad():
             x_next_pred, _ = model.predict(x_reshaped, u)
-        predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(sampler.width, sampler.height))
+        predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(obs_res, obs_res))
     true_x_next = [data[-1] for data in sampled_data]
     return true_x_next, predicted
 
-def plot_preds(model, env, num_eval):
-    true_x_next, pred_x_next = predict_x_next(model, env, num_eval)
+def plot_preds(model, env, num_eval, stack):
+    true_x_next, pred_x_next = predict_x_next(model, env, num_eval, stack)
 
     # plot the predicted and true observations
     fig, axes =plt.subplots(nrows=2, ncols=num_eval)
@@ -179,8 +235,9 @@ def plot_preds(model, env, num_eval):
     return fig
 
 def main(args):
+    sample_path = args.sample_path
     env_name = args.env
-    assert env_name in ['planar', 'pendulum']
+    assert env_name in ['planar', 'pendulum', 'hopper', 'cartpole']
     propor = args.propor
     batch_size = args.batch_size
     lr = args.lr
@@ -188,18 +245,38 @@ def main(args):
     lam = args.lam
     epoches = args.num_iter
     iter_save = args.iter_save
-    log_dir = args.log_dir
+    exp_name = args.exp_name
     seed = args.seed
+    stack = args.stack
 
     np.random.seed(seed)
     torch.manual_seed(seed)
+    ptu.init_gpu(use_gpu=args.gpu)
 
-    dataset = datasets[env_name]('data/data/' + env_name)
+    dataset = datasets.OfflineDataset(
+        dir='./data/samples/' + env_name + '/' + sample_path,
+        stack=stack
+    )
+    
+    print('OFFLINE DATASET SIZE: ', len(dataset))
+
     train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=8)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=8)
+    train_loader = DataLoader(train_set, batch_size=batch_size, 
+                              shuffle=True, drop_last=False, num_workers=8)
+    test_loader = DataLoader(test_set, batch_size=batch_size, 
+                              shuffle=False, drop_last=False, num_workers=8)
+    exp_name = f'{exp_name}-{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'
 
-    obs_dim, z_dim, u_dim, r_dim = settings[env_name]
+    # ##### Debugging ####
+    # return
+    # ####################
+    if dataset.return_obs_image():  # True if observation is images
+        obs_type = 'image'
+    else:
+        obs_type = 'serial'
+
+    obs_dim, z_dim, u_dim, r_dim = settings[env_name][obs_type]
+    obs_dim = obs_dim * stack
 
     if args.z_dim is None:
         args.z_dim = z_dim
@@ -210,32 +287,36 @@ def main(args):
         args.r_dim = r_dim
     else:
         r_dim = args.r_dim
+    
+    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, r_dim=r_dim,
+                env=env_name, stack=stack, use_cnn=args.cnn).to(ptu.device)
 
-    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, r_dim=r_dim, env=env_name).to(device)
-
-    optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), eps=1e-8, lr=lr, weight_decay=weight_decay)
+    optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
+                           eps=1e-8, lr=lr, weight_decay=weight_decay)
 
     writer = None
 
-    log_dir = log_dir + '/' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-    result_path = './result/' + env_name + '/' + log_dir
-    if not path.exists(result_path):
+    result_path = './result/' + env_name + '/' + exp_name
+    if not os.path.exists(result_path):
         os.makedirs(result_path)
-    with open(result_path + '/settings', 'w') as f:
-        json.dump(args.__dict__, f, indent=2)
+    with open(result_path + '/hyperparameters.json', 'w') as f:
+        hparameter = {
+            **args.__dict__,
+            **{'obs_dim': obs_dim, 'z_dim': z_dim, 'u_dim': u_dim}              
+        }
+        json.dump(hparameter, f, indent=2)
 
     for i in range(epoches):
-        avg_loss, train_metrics = train(model, train_loader, optimizer, global_step=i, hparams=args)
+        avg_loss, train_metrics = train(model, train_loader, optimizer, global_step=i, args=args)
         print('Epoch %d' % i)
         print("Training loss: %f" % (avg_loss))
         # evaluate on test set
-        eval_metrics = evaluate(model, test_loader, hparams=args)
+        eval_metrics = evaluate(model, test_loader, args=args)
         print('State loss: ' + str(eval_metrics['recon']))
         print('Next state loss: ' + str(eval_metrics['pred']))
 
         if writer is None:
-            writer = SummaryWriter('logs/' + env_name + '/' + log_dir, comment=args.comment)
+            writer = SummaryWriter('logs/' + env_name + '/' + exp_name, comment=args.comment)
             writer.add_hparams(args.__dict__, {})
 
         # ...log the running loss
@@ -246,9 +327,10 @@ def main(args):
             writer.add_scalar('train/' + key, value, i)
 
         # save model
+        num_eval = 10 # number of images evaluated on tensorboard
         if (i + 1) % iter_save == 0:
             writer.add_figure('actual vs. predicted observations',
-                              plot_preds(model, env_name, num_eval),
+                              plot_preds(model, env_name, num_eval, stack),
                               global_step=i)
             print('Saving the model.............')
 
@@ -262,21 +344,41 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='train e2c model')
 
     # the default value is used for the planar task
-    parser.add_argument('--env', required=True, type=str, help='the environment used for training')
-    parser.add_argument('--propor', default=3/4, type=float, help='the proportion of data used for training')
-    parser.add_argument('--batch_size', default=128, type=int, help='batch size')
-    parser.add_argument('--lr', default=0.0005, type=float, help='the learning rate')
-    parser.add_argument('--decay', default=0.001, type=float, help='the L2 regularization')
-    parser.add_argument('--lam', default=0.25, type=float, help='the weight of the consistency term')
-    parser.add_argument('--jac_weight', default=1.0, type=float, help='the weight of the Jacobian terms')
-    parser.add_argument('--num_iter', default=5000, type=int, help='the number of epoches')
-    parser.add_argument('--iter_save', default=1000, type=int, help='save model and result after this number of iterations')
-    parser.add_argument('--log_dir', required=True, type=str, help='the directory to save training log')
-    parser.add_argument('--seed', required=True, type=int, help='seed number')
-    parser.add_argument('--z_dim', type=int, help='latent space dimension (default to environment setting)')
-    parser.add_argument('--r_dim', type=int, help='residual dimension (default to environment setting)')
-    parser.add_argument('--comment', type=str, help='comment to append to logdir', default='')
-
+    parser.add_argument('--sample_path', required=True, type=str, 
+                        help='the "sample-M_D_Y_hms" folder for samples')
+    parser.add_argument('--env', required=True, type=str, 
+                        help='the environment used for training')
+    parser.add_argument('--propor', default=0.75, type=float, 
+                        help='the proportion of data used for training')
+    parser.add_argument('--batch_size', default=128, type=int, 
+                        help='batch size')
+    parser.add_argument('--lr', default=0.0005, type=float, 
+                        help='the learning rate')
+    parser.add_argument('--decay', default=0.001, type=float, 
+                        help='the L2 regularization')
+    parser.add_argument('--lam', default=0.25, type=float, 
+                        help='the weight of the consistency term')
+    parser.add_argument('--jac_weight', default=1.0, type=float,
+                        help='the weight of the Jacobian terms')
+    parser.add_argument('--num_iter', default=5000, type=int, 
+                        help='the number of epoches')
+    parser.add_argument('--iter_save', default=1000, type=int, 
+                        help='save model and result after this number of iterations')
+    parser.add_argument('--exp_name', required=True, type=str, 
+                        help='the directory to save training log (in `logs/env/exp_name`)')
+    parser.add_argument('--seed', required=True, type=int, 
+                        help='seed number')
+    parser.add_argument('--cnn', action="store_true", 
+                        help='use cnn as encoder and decoder')
+    parser.add_argument('--stack', default=1, type=int, 
+                        help='number of frames to stack when training')
+    parser.add_argument('--gpu', action="store_true",
+                        help='use gpu if available')
+    parser.add_argument('--z_dim', type=int,
+                        help='latent space dimension (default to environment setting)')
+    parser.add_argument('--r_dim', type=int,
+                        help='residual dimension (default to environment setting)')
+    
     args = parser.parse_args()
 
     main(args)

@@ -2,22 +2,30 @@ from torch import nn
 
 from normal import *
 from networks import *
+import networks
 
 torch.set_default_dtype(torch.float32)
 
 class E2C(nn.Module):
-    def __init__(self, obs_dim, z_dim, u_dim, r_dim, env = 'planar'):
+    def __init__(self, obs_dim, z_dim, u_dim, r_dim, env, stack=1, use_cnn=False):
+        """
+        - stack (int): number of frames to concatenate (defaults to `1`)
+        """
         super(E2C, self).__init__()
         enc, dec, trans = load_config(env)
+        if use_cnn:
+            enc = networks.CNNEncoder
+            dec = networks.CNNDecoder
 
         self.obs_dim = obs_dim
         self.z_dim = z_dim
         self.u_dim = u_dim
         self.r_dim = r_dim
+        self.stack = stack
 
-        self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim)
+        self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim, stack_num=self.stack)
         # self.encoder.apply(init_weights)
-        self.decoder = dec(z_dim=z_dim, obs_dim=obs_dim)
+        self.decoder = dec(z_dim=z_dim, obs_dim=obs_dim, stack_num=self.stack)
         # self.decoder.apply(init_weights)
         self.trans = trans(z_dim=z_dim, u_dim=u_dim, r_dim=r_dim)
         # self.trans.apply(init_weights)
@@ -60,7 +68,7 @@ class E2C(nn.Module):
         z_next, q_z_next_pred, cost_residual, dyn_mats = self.transition(z, q_z, u)
 
         x_next_pred = self.decode(z_next)
-
+        
         mu_next, logvar_next = self.encode(x_next)
         q_z_next = NormalDistribution(mean=mu_next, logvar=logvar_next, A=dyn_mats[0])
 

@@ -2,6 +2,7 @@ from functools import partial
 import torch
 from torch import nn
 from normal import NormalDistribution
+from utils import pytorch_utils as ptu
 
 torch.set_default_dtype(torch.float32)
 
@@ -67,6 +68,7 @@ class Transition(nn.Module):
         torch.nn.init.orthogonal_(self.fc_H.weight)
         self.fc_j = nn.Linear(self.h_dim, self.r_dim)
         torch.nn.init.orthogonal_(self.fc_j.weight)
+        self.device = ptu.device
 
     def forward_h(self, z_bar_t):
         return self.net(z_bar_t)
@@ -143,7 +145,7 @@ class Transition(nn.Module):
         return mean, NormalDistribution(mean, logvar=q_z_t.logvar, A=A_t), cost_residual, (A_t, B_t, o_t, G_t, H_t, j_t)
 
 class PlanarEncoder(Encoder):
-    def __init__(self, obs_dim = 1600, z_dim = 2):
+    def __init__(self, obs_dim = 1600, z_dim = 2, stack_num=1):
         net = nn.Sequential(
             nn.Linear(obs_dim, 150),
             nn.BatchNorm1d(150),
@@ -162,7 +164,7 @@ class PlanarEncoder(Encoder):
         super(PlanarEncoder, self).__init__(net, obs_dim, z_dim)
 
 class PlanarDecoder(Decoder):
-    def __init__(self, z_dim = 2, obs_dim = 1600):
+    def __init__(self, z_dim = 2, obs_dim = 1600, stack_num=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 200),
             nn.BatchNorm1d(200),
@@ -191,7 +193,7 @@ class PlanarTransition(Transition):
         super(PlanarTransition, self).__init__(net, z_dim, u_dim, r_dim)
 
 class PendulumEncoder(Encoder):
-    def __init__(self, obs_dim = 4608, z_dim = 3):
+    def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
         net = nn.Sequential(
             nn.Linear(obs_dim, 800),
             nn.BatchNorm1d(800),
@@ -206,7 +208,7 @@ class PendulumEncoder(Encoder):
         super(PendulumEncoder, self).__init__(net, obs_dim, z_dim)
 
 class PendulumDecoder(Decoder):
-    def __init__(self, z_dim = 3, obs_dim = 4608):
+    def __init__(self, z_dim = 3, obs_dim = 4608, stack_num=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 800),
             nn.BatchNorm1d(800),
@@ -233,34 +235,119 @@ class PendulumTransition(Transition):
         )
         super(PendulumTransition, self).__init__(net, z_dim, u_dim, r_dim)
 
+################ IMAGE OBSERVATION ################
+class CNNEncoder(Encoder):
+    """ 
+    input should be (B*S, C, H, W) 
+    - B is batch, 
+    - S is stack number, 
+    - C is input channel, 
+    - H == W
+    """
+    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=4):
+        #### DEBUG ####
+        print('obs_dim: ', obs_dim)
+        print('input_channel: ', input_channel)
+        ###############
+
+        net = nn.Sequential(
+            nn.Conv2d(input_channel*stack_num, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            #nn.Unflatten(0, (-1, stack_num)),
+            nn.Flatten(start_dim=1, end_dim=-1), #(B, S*C, H, W)
+            nn.Linear(n_filters * (obs_dim//4//4//4//stack_num), z_dim * 2)
+        )
+        super(CNNEncoder, self).__init__(net, obs_dim, z_dim)
+
+
+class CNNDecoder(Decoder):
+    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=4):
+        last_dim = obs_dim//stack_num//4//4//4
+        h = round(last_dim ** (1/2))
+        w = last_dim // h
+        net = nn.Sequential(
+            nn.Linear(z_dim, n_filters * h * w),
+            nn.Unflatten(-1, (n_filters, h, w)),
+            #nn.Flatten(start_dim=0, end_dim=1),
+            nn.Upsample(scale_factor=2),
+            nn.ConvTranspose2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+            nn.ConvTranspose2d(n_filters, n_filters, 5, padding=2),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2),
+            nn.ConvTranspose2d(n_filters, input_channel*stack_num, 5, padding=2),
+            nn.Sigmoid()
+        )
+        super(CNNDecoder, self).__init__(net, z_dim, obs_dim)
+
+################ SERIAL OBSERVATION ################
+class SerialEncoder(Encoder):
+    """ 
+    input should be (B, O*S) 
+    - B is batch, 
+    - S is stack number, 
+    - O is observation size
+    """
+    def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
+        net = nn.Sequential(
+            nn.Linear(obs_dim, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, z_dim * 2)
+        )
+        super(SerialEncoder, self).__init__(net, obs_dim, z_dim)
+
+
+class SerialDecoder(Decoder):
+    def __init__(self, z_dim = 3, obs_dim = 4608, stack_num=1):
+        net = nn.Sequential(
+            nn.Linear(z_dim, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, 800),
+            nn.BatchNorm1d(800),
+            nn.ReLU(),
+
+            nn.Linear(800, obs_dim)
+        )
+        super(SerialDecoder, self).__init__(net, z_dim, obs_dim)
+
+################ MUJOCO TRANSITION ################
+class MujocoTransition(Transition):
+    def __init__(self, u_dim, z_dim=512):   # NOTE: order is different!
+        net = nn.Sequential(
+            nn.Linear(z_dim, 100),
+            nn.BatchNorm1d(100),
+            nn.ReLU(),
+
+            nn.Linear(100, 100),
+            nn.BatchNorm1d(100),
+            nn.ReLU()
+        )
+        super().__init__(net, z_dim, u_dim)
+
 CONFIG = {
-    'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
-    'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition)
+    'planar': (SerialEncoder, SerialDecoder, MujocoTransition),
+    'pendulum': (SerialEncoder, SerialDecoder, MujocoTransition),
+    'hopper': (SerialEncoder, SerialDecoder, MujocoTransition),
+    'cartpole': (SerialEncoder, SerialDecoder, MujocoTransition)
 }
 
 def load_config(name):
     return CONFIG[name]
 
 __all__ = ['load_config']
-
-# enc = PendulumEncoder()
-# dec = PendulumDecoder()
-# trans = PendulumTransition()
-#
-# x = torch.randn(size=(10, 4608))
-# # print (x.size())
-# mean, logvar = enc(x)
-# # print (logvar.size())
-# x_recon = dec(mean)
-# # print (x_recon.size())
-#
-# q_z_t = NormalDistribution(mean, logvar)
-# print (q_z_t.mean.size())
-# print (q_z_t.cov.size())
-# u_t = torch.randn(size=(10, 1))
-# z_t_1 = trans(mean, q_z_t, u_t)
-# print (z_t_1[1].mean.size())
-# print (z_t_1[1].cov.size())
-#
-# kl = NormalDistribution.KL_divergence(z_t_1[1], q_z_t)
-# print (kl)
