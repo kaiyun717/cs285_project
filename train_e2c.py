@@ -23,7 +23,7 @@ from data.sample_eval import sample_eval_data
 torch.set_default_dtype(torch.float32)
 
 device = torch.device("cuda")
-                                  # obs,    z,  u
+                                  # obs,    z,  u   r
 settings = {'cartpole': {'image': (64*64,   8,  1,  3)},
             'planar':   {'image': (40*40,   8,  2,  3)},
             'pendulum': {'image': (48*48,   8,  1,  4)},
@@ -47,6 +47,11 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
         recon_loss = torch.nn.L1Loss(reduction='none')
 
     A_t, B_t, _, G_t, H_t, _ = dyn_mats
+
+    assert x_recon.min() >= 0 and x_recon.max() <= 1
+    assert x_next_pred.min() >= 0 and x_next_pred.max() <= 1
+    assert x.min() >= 0 and x.max() <= 1
+    assert x_next.min() >= 0 and x_next.max() <= 1
 
     # lower-bound loss
     recon_term = recon_loss(x_recon, x).sum(dim=1).mean(dim=0)
@@ -119,9 +124,10 @@ def train(model, train_loader, optimizer, global_step, args):
         u = u.float().to(ptu.device)
         optimizer.zero_grad()
 
+        cost = -reward.float().to(ptu.device)
+
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
         cost_pred = cost_res_pred.pow(2).sum(dim=1)
-        loss, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, args)
 
         if args.cnn:
             x = x.view(-1, model.obs_dim)
@@ -130,10 +136,9 @@ def train(model, train_loader, optimizer, global_step, args):
             x_next_pred = x_next_pred.view(-1, model.obs_dim)
             # NOTE: what is this?
 
-        cost = -reward.float().to(ptu.device)
-
-        loss = compute_loss(
+        loss, metrics_it = compute_loss(
                     x=x,                            # 'before' obs
+                    u_t=u,                          # action
                     x_next=x_next,                  # 'after' obs
                     q_z_next=q_z_next,              # q(z_next|x_next) distrubtion
                     x_recon=x_recon,                # decoded(z)
@@ -142,8 +147,8 @@ def train(model, train_loader, optimizer, global_step, args):
                     q_z_next_pred=q_z_next_pred,    # transition in latent space
                     cost=cost,
                     cost_pred=cost_pred,
-                    model=model.trans,
-                    cost_res_pred=cost_res_pred,
+                    transition_model=model.trans,
+                    z_residual=cost_res_pred,
                     dyn_mats=dyn_mats,
                     args=args
                 )
@@ -163,7 +168,7 @@ def evaluate(model, test_loader, args):
     num_batches = len(test_loader)
     metrics = defaultdict(float)
     with torch.no_grad():
-        for x, u, x_next, r, d in test_loader:  # state, action, next_state, reward, done
+        for x, u, x_next, reward, d in test_loader:  # state, action, next_state, reward, done
             if args.cnn:
                 x = x.float().to(ptu.device)
                 x_next = x_next.float().to(ptu.device)
@@ -172,53 +177,70 @@ def evaluate(model, test_loader, args):
                 x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
             u = u.float().to(ptu.device)
 
-            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
+            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
             if args.cnn:
                 x = x.view(-1, model.obs_dim)
                 x_next = x_next.view(-1, model.obs_dim)
                 x_recon = x_recon.view(-1, model.obs_dim)
                 x_next_pred = x_next_pred.view(-1, model.obs_dim)
-            loss_1, loss_2 = compute_log_likelihood(x, x_recon, x_next, x_next_pred, mse=args.cnn)
-            state_loss += loss_1
-            next_state_loss += loss_2
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
             cost_pred = cost_res_pred.pow(2).sum(dim=1)
-            _, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, args)
+            cost = -reward.float().to(ptu.device)
+            _, metrics_it = compute_loss(
+                        x=x,                            # 'before' obs
+                        u_t=u,                          # action
+                        x_next=x_next,                  # 'after' obs
+                        q_z_next=q_z_next,              # q(z_next|x_next) distrubtion
+                        x_recon=x_recon,                # decoded(z)
+                        x_next_pred=x_next_pred,        # decoded(z_next)
+                        q_z=q_z,                        # q(z|x) distribution
+                        q_z_next_pred=q_z_next_pred,    # transition in latent space
+                        cost=cost,
+                        cost_pred=cost_pred,
+                        transition_model=model.trans,
+                        z_residual=cost_res_pred,
+                        dyn_mats=dyn_mats,
+                        args=args
+                    )
             for key, value in metrics_it.items():
                 metrics[key] += value
 
     return {key: value / num_batches for key, value in metrics.items()}
 
 # code for visualizing the training process
-def predict_x_next(model, env, num_eval, stack):
+def predict_x_next(model, env_name, vis_loader, num_eval, stack):
     # first sample a true trajectory from the environment
-    obs_res = int(np.sqrt(settings[env]['image'][0]))
-    step_size = step_sizes[env]
-    sampled_data = sample_eval_data(env_name=env, sample_size=num_eval, 
-                                    obs_res=obs_res, stack=stack, 
-                                    step_size=step_size)
-    print(sampled_data)
+    obs_res = int(np.sqrt(settings[env_name]['image'][0]))
+    step_size = step_sizes[env_name]
+
     # use the trained model to predict the next observation
     predicted = []
-    for x, u, x_next in sampled_data:
-        print(x.shape)
-        print(u.shape)
-        print(x_next.shape)
+    true_x = []
+    for x, u, x_next, _, _ in vis_loader:
+        x = x[0].cpu().numpy()
+        u = u[0].cpu().numpy()
+        x_next = x_next[0].cpu().numpy()
         x_reshaped = x.reshape(-1)
         x_reshaped = torch.from_numpy(x_reshaped).float().unsqueeze(dim=0).to(ptu.device)
         u = torch.from_numpy(u).float().unsqueeze(dim=0).to(ptu.device)
         with torch.no_grad():
-            x_next_pred, _ = model.predict(x_reshaped, u)
-        predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(obs_res, obs_res))
-    true_x_next = [data[-1] for data in sampled_data]
-    return true_x_next, predicted
+            x_recon, x_next_pred, _, _, _, _, _ = model.forward(x_reshaped, u, x_reshaped)
+        predicted.append(np.concatenate(
+            tuple(x_recon.cpu().numpy().reshape(stack, obs_res, obs_res)) + tuple(x_next_pred.squeeze().cpu().numpy().reshape(stack, obs_res, obs_res))
+        ))
+        true_x.append(np.concatenate((tuple(x) + tuple(x_next))))
 
-def plot_preds(model, env, num_eval, stack):
-    true_x_next, pred_x_next = predict_x_next(model, env, num_eval, stack)
+        if len(predicted) > num_eval:
+            break
+
+    return true_x, predicted
+
+def plot_preds(model, env_name, vis_loader, num_eval, stack):
+    true_x_next, pred_x_next = predict_x_next(model, env_name, vis_loader, num_eval, stack)
 
     # plot the predicted and true observations
-    fig, axes =plt.subplots(nrows=2, ncols=num_eval)
+    fig, axes =plt.subplots(nrows=2, ncols=len(true_x_next))
     plt.setp(axes, xticks=[], yticks=[])
     pad = 5
     axes[0, 0].annotate('True observations', xy=(0, 0.5), xytext=(-axes[0,0].yaxis.labelpad - pad, 0),
@@ -228,9 +250,10 @@ def plot_preds(model, env, num_eval, stack):
                         xycoords=axes[1, 0].yaxis.label, textcoords='offset points',
                         size='large', ha='right', va='center')
 
-    for idx in np.arange(num_eval):
-        axes[0, idx].imshow(true_x_next[idx], cmap='Greys')
-        axes[1, idx].imshow(pred_x_next[idx], cmap='Greys')
+    for idx in np.arange(len(true_x_next)):
+        axes[0, idx].imshow(true_x_next[idx], cmap='Greys', vmin=0, vmax=1)
+        axes[1, idx].imshow(pred_x_next[idx], cmap='Greys', vmin=0, vmax=1)
+
     fig.tight_layout()
     return fig
 
@@ -265,6 +288,8 @@ def main(args):
                               shuffle=True, drop_last=False, num_workers=8)
     test_loader = DataLoader(test_set, batch_size=batch_size, 
                               shuffle=False, drop_last=False, num_workers=8)
+    vis_loader = DataLoader(test_set, batch_size=1, 
+                            shuffle=True, drop_last=False, num_workers=8)
     exp_name = f'{exp_name}-{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'
 
     # ##### Debugging ####
@@ -330,7 +355,7 @@ def main(args):
         num_eval = 10 # number of images evaluated on tensorboard
         if (i + 1) % iter_save == 0:
             writer.add_figure('actual vs. predicted observations',
-                              plot_preds(model, env_name, num_eval, stack),
+                              plot_preds(model, env_name, vis_loader, num_eval, stack),
                               global_step=i)
             print('Saving the model.............')
 
@@ -366,14 +391,18 @@ if __name__ == "__main__":
                         help='save model and result after this number of iterations')
     parser.add_argument('--exp_name', required=True, type=str, 
                         help='the directory to save training log (in `logs/env/exp_name`)')
+    parser.add_argument('--comment', type=str, 
+                        help='a comment describing the run')
     parser.add_argument('--seed', required=True, type=int, 
                         help='seed number')
     parser.add_argument('--cnn', action="store_true", 
                         help='use cnn as encoder and decoder')
     parser.add_argument('--stack', default=1, type=int, 
                         help='number of frames to stack when training')
-    parser.add_argument('--gpu', action="store_true",
+    parser.add_argument('--gpu', action="store_true", default=True,
                         help='use gpu if available')
+    parser.add_argument('--ngpu', action="store_false",
+                        dest='gpu', help='do not use gpu')
     parser.add_argument('--z_dim', type=int,
                         help='latent space dimension (default to environment setting)')
     parser.add_argument('--r_dim', type=int,

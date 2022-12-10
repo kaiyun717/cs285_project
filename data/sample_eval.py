@@ -9,15 +9,13 @@ from datetime import datetime
 import argparse
 import cv2
 from torchvision.transforms import ToTensor
+from PIL import Image
 
 import torch
 import gym
 from gym.envs.registration import register
 from gym.envs.registration import registry
-
-def opencv_downsample(image: np.ndarray, out_size: tuple):
-    resized = cv2.resize(image, dsize=out_size, interpolation=cv2.INTER_CUBIC)
-    return resized
+from utils.np_img_process import opencv_downsample, rgb2gray
 
 def process_eval_data(eval_data, sample_size, stack):
     processed = []
@@ -32,9 +30,9 @@ def process_eval_data(eval_data, sample_size, stack):
             # before.append(process_image(temp_before))
             # after.append(process_image(temp_after))
         
-        processed.append((torch.cat(tuple(before)),
+        processed.append((np.concatenate(tuple(before)),
                           np.array(eval_data[i][1]),
-                          torch.cat(tuple(after))))
+                          np.concatenate(tuple(after))))
     
     return processed
 
@@ -108,11 +106,8 @@ def sample_eval_data(env_name,
 
         print('RENDERED BEFORE: ', before.shape)
 
-        before = before.convert('L')
-        after = before.convert('L')
-
-        before = ToTensor()((opencv_downsample(before, (obs_res, obs_res))))
-        after = ToTensor()((opencv_downsample(after, (obs_res, obs_res))))
+        before = np.array(Image.fromarray(opencv_downsample(before, (obs_res, obs_res))).convert('L')) / 255
+        after = np.array(Image.fromarray(opencv_downsample(after, (obs_res, obs_res))).convert('L')) / 255
         samples.append((before, u, after))
     
     processed_samples = process_eval_data(samples, sample_size, stack)

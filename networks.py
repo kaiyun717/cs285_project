@@ -218,7 +218,8 @@ class PendulumDecoder(Decoder):
             nn.BatchNorm1d(800),
             nn.ReLU(),
 
-            nn.Linear(800, obs_dim)
+            nn.Linear(800, obs_dim),
+            nn.Sigmoid(),
         )
         super(PendulumDecoder, self).__init__(net, z_dim, obs_dim)
 
@@ -322,13 +323,14 @@ class SerialDecoder(Decoder):
             nn.BatchNorm1d(800),
             nn.ReLU(),
 
-            nn.Linear(800, obs_dim)
+            nn.Linear(800, obs_dim),
+            nn.Sigmoid(),
         )
         super(SerialDecoder, self).__init__(net, z_dim, obs_dim)
 
 ################ MUJOCO TRANSITION ################
 class MujocoTransition(Transition):
-    def __init__(self, u_dim, z_dim=512):   # NOTE: order is different!
+    def __init__(self, u_dim, z_dim=512, r_dim=16):   # NOTE: order is different!
         net = nn.Sequential(
             nn.Linear(z_dim, 100),
             nn.BatchNorm1d(100),
@@ -338,7 +340,7 @@ class MujocoTransition(Transition):
             nn.BatchNorm1d(100),
             nn.ReLU()
         )
-        super().__init__(net, z_dim, u_dim)
+        super().__init__(net, z_dim, u_dim, r_dim)
 
 CONFIG = {
     'planar': (SerialEncoder, SerialDecoder, MujocoTransition),
