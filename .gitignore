@@ -1,4 +1,8 @@
-data/data
-data/samples
 logs/
 result/
+data/**/*.png
+**/*.pyc
+.ipynb_checkpoints/
+**/__pycache__/
+data/data
+data/samples

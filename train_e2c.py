@@ -1,3 +1,5 @@
+from collections import defaultdict
+import datetime
 from tensorboardX import SummaryWriter
 import torch
 import torch.optim as optim
@@ -14,67 +16,112 @@ import os
 import json
 from normal import NormalDistribution
 from e2c_model import E2C
+from tqdm import tqdm
 import datasets
 from data.sample_eval import sample_eval_data
 
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 
+device = torch.device("cuda")
                                   # obs,    z,  u
-settings = {'cartpole': {'image': (64*64,   8,  1)},
-            'planar':   {'image': (40*40,   8,  2)},
-            'pendulum': {'image': (48*48,   8,  1)},
-            'hopper':   {'image': (64*64,  16,  3),
-                        'serial': (11,     16,  3)}}
+settings = {'cartpole': {'image': (64*64,   8,  1,  3)},
+            'planar':   {'image': (40*40,   8,  2,  3)},
+            'pendulum': {'image': (48*48,   8,  1,  4)},
+            'hopper':   {'image': (64*64,  16,  3,  8),
+                        'serial': (11,     16,  3,  8)}}
 
 step_sizes = {'cartpole': 4,
              'planar':    4,
              'pendulum':  4,
              'hopper':    4}
 
-def compute_loss(x, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, lamda, mse=False):
+num_eval = 10 # number of images evaluated on tensorboard
+
+
+def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, transition_model, z_residual, dyn_mats, args, recon_loss='bce'):
+    if recon_loss == 'bce':
+        recon_loss = torch.nn.BCELoss(reduction='none')
+    elif recon_loss == 'mse':
+        recon_loss = torch.nn.MSELoss(reduction='none')
+    elif recon_loss == 'l1':
+        recon_loss = torch.nn.L1Loss(reduction='none')
+
+    A_t, B_t, _, G_t, H_t, _ = dyn_mats
+
     # lower-bound loss
-    if mse:
-        recon_term = F.mse_loss(x_recon, x)
-        pred_loss = F.mse_loss(x_next_pred, x_next)
-    else:
-        recon_term = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
-                                          + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
-        pred_loss = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
-                                      + (1 - x_next) * torch.log(1e-5 + 1 - x_next_pred), dim=1))
+    recon_term = recon_loss(x_recon, x).sum(dim=1).mean(dim=0)
+    pred_loss = recon_loss(x_next_pred, x_next).sum(dim=1).mean(dim=0)
 
     kl_term = - 0.5 * torch.mean(torch.sum(1 + q_z.logvar - q_z.mean.pow(2) - q_z.logvar.exp(), dim = 1))
 
     lower_bound = recon_term + pred_loss + kl_term
 
     # consistency loss
-    consis_term = NormalDistribution.KL_divergence(q_z_next_pred, q_z_next)
-    return lower_bound + lamda * consis_term
+    consis_term = NormalDistribution.KL_divergence(q_z_next_pred, q_z_next).sum(dim=-1)
 
-def train(model, train_loader, lam, optimizer):
+    cost_term = F.mse_loss(cost_pred, cost)
+
+    # jacobian loss
+    zbar = q_z.mean
+    dz = torch.randn(zbar.shape, device=device) * 0.3
+    du = torch.randn(u_t.shape, device=device) * 0.3
+    zhat = zbar + dz
+    uhat = u_t + du
+    dz_next_jac = A_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + B_t.bmm(du.unsqueeze(-1)).squeeze(-1)
+    _, zhat_next_true, zhat_residual, _ = transition_model.forward(zbar, NormalDistribution(zhat, q_z.logvar), uhat)
+    zhat_next_jac = NormalDistribution(q_z_next_pred.mean + dz_next_jac, q_z.logvar, A=A_t)
+    dresidual_jac = G_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + H_t.bmm(du.unsqueeze(-1)).squeeze(-1)
+
+    jac_loss_dyn = NormalDistribution.KL_divergence(
+        zhat_next_jac,
+        zhat_next_true,
+        # NormalDistribution(zhat_next_true.mean.detach(), zhat_next_true.logvar.detach(), A=zhat_next_true.A.detach()),
+    ).sum(dim=-1)
+    jac_loss_res = F.mse_loss(z_residual + dresidual_jac, zhat_residual)
+
+    results = lower_bound + args.lam * consis_term + cost_term + args.jac_weight * (jac_loss_dyn + jac_loss_res), {
+        'recon': recon_term.item(),
+        'pred': pred_loss.item(),
+        'kl': kl_term.item(),
+        'consis': consis_term.item(),
+        'cost': cost_term.item(),
+        'jac_dyn': jac_loss_dyn.item(),
+        'jac_cost': jac_loss_res.item(),
+        'jac_dyn_err': (zhat_next_jac.mean - zhat_next_true.mean).pow(2).sum(-1).mean().sqrt().item(),
+        'dyn_error': (q_z_next_pred.mean - q_z_next.mean).pow(2).sum(-1).mean().sqrt().item(),
+        'z_std_rms': q_z.mean.pow(2).sum(-1).mean().sqrt().item(),
+    }
+    return results
+
+def train(model, train_loader, optimizer, global_step, args):
     model.train()
     avg_loss = 0.0
+
+    metrics = defaultdict(float)
 
     num_batches = len(train_loader)
 
     print("Number of batches: ", num_batches)   # debug
     print("Train Loader `batch_size`: ", train_loader.batch_size)
 
-    for _, (x, u, x_next, reward, done) in enumerate(train_loader, 0):
+    for _, (x, u, x_next, reward, done) in tqdm(enumerate(train_loader, 0), total=num_batches):
         # x: 'before' obs in batch & stack (num_batch, obs_dim)
         # u: 'action' in batch (num_batch, action)
         # x_next: 'after' obs in batch (num_batch, obs_dim)
         
         if args.cnn:
-            x = x.double().to(ptu.device)
-            x_next = x_next.double().to(ptu.device)
+            x = x.float().to(ptu.device)
+            x_next = x_next.float().to(ptu.device)
         else:
-            x = x.view(-1, model.obs_dim).double().to(ptu.device)
-            x_next = x_next.view(-1, model.obs_dim).double().to(ptu.device)
+            x = x.view(-1, model.obs_dim).float().to(ptu.device)
+            x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
             
-        u = u.double().to(ptu.device)
+        u = u.float().to(ptu.device)
         optimizer.zero_grad()
 
-        x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
+        x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
+        cost_pred = cost_res_pred.pow(2).sum(dim=1)
+        loss, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, args)
 
         if args.cnn:
             x = x.view(-1, model.obs_dim)
@@ -82,6 +129,8 @@ def train(model, train_loader, lam, optimizer):
             x_recon = x_recon.view(-1, model.obs_dim)
             x_next_pred = x_next_pred.view(-1, model.obs_dim)
             # NOTE: what is this?
+
+        cost = -reward.float().to(ptu.device)
 
         loss = compute_loss(
                     x=x,                            # 'before' obs
@@ -91,40 +140,37 @@ def train(model, train_loader, lam, optimizer):
                     x_next_pred=x_next_pred,        # decoded(z_next)
                     q_z=q_z,                        # q(z|x) distribution
                     q_z_next_pred=q_z_next_pred,    # transition in latent space
-                    lamda=lam,
-                    mse=args.cnn                         
+                    cost=cost,
+                    cost_pred=cost_pred,
+                    model=model.trans,
+                    cost_res_pred=cost_res_pred,
+                    dyn_mats=dyn_mats,
+                    args=args
                 )
 
         avg_loss += loss.item()
         loss.backward()
         optimizer.step()
 
-    return avg_loss / num_batches
+        for key, value in metrics_it.items():
+            metrics[key] += value
 
-def compute_log_likelihood(x, x_recon, x_next, x_next_pred, mse=False):
-    if mse:
-        loss_1 = F.mse_loss(x_recon, x)
-        loss_2 = F.mse_loss(x_next_pred, x_next)
-    else:
-        loss_1 = -torch.mean(torch.sum(x * torch.log(1e-5 + x_recon)
-                                      + (1 - x) * torch.log(1e-5 + 1 - x_recon), dim=1))
-        loss_2 = -torch.mean(torch.sum(x_next * torch.log(1e-5 + x_next_pred)
-                                   + (1 - x_next) * torch.log(1e-5 + 1 - x_next_pred), dim=1))
-    return loss_1, loss_2
+    return avg_loss / num_batches, {key: value / num_batches for key, value in metrics.items()}
 
-def evaluate(model, test_loader):
+
+def evaluate(model, test_loader, args):
     model.eval()
     num_batches = len(test_loader)
-    state_loss, next_state_loss = 0., 0.
+    metrics = defaultdict(float)
     with torch.no_grad():
         for x, u, x_next, r, d in test_loader:  # state, action, next_state, reward, done
             if args.cnn:
-                x = x.double().to(ptu.device)
-                x_next = x_next.double().to(ptu.device)
+                x = x.float().to(ptu.device)
+                x_next = x_next.float().to(ptu.device)
             else:
-                x = x.view(-1, model.obs_dim).double().to(ptu.device)
-                x_next = x_next.view(-1, model.obs_dim).double().to(ptu.device)
-            u = u.double().to(ptu.device)
+                x = x.view(-1, model.obs_dim).float().to(ptu.device)
+                x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
+            u = u.float().to(ptu.device)
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next = model(x, u, x_next)
             if args.cnn:
@@ -136,7 +182,13 @@ def evaluate(model, test_loader):
             state_loss += loss_1
             next_state_loss += loss_2
 
-    return state_loss.item() / num_batches, next_state_loss.item() / num_batches
+            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
+            cost_pred = cost_res_pred.pow(2).sum(dim=1)
+            _, metrics_it = compute_loss(x, u, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, model.trans, cost_res_pred, dyn_mats, args)
+            for key, value in metrics_it.items():
+                metrics[key] += value
+
+    return {key: value / num_batches for key, value in metrics.items()}
 
 # code for visualizing the training process
 def predict_x_next(model, env, num_eval, stack):
@@ -154,10 +206,10 @@ def predict_x_next(model, env, num_eval, stack):
         print(u.shape)
         print(x_next.shape)
         x_reshaped = x.reshape(-1)
-        x_reshaped = torch.from_numpy(x_reshaped).double().unsqueeze(dim=0).to(ptu.device)
-        u = torch.from_numpy(u).double().unsqueeze(dim=0).to(ptu.device)
+        x_reshaped = torch.from_numpy(x_reshaped).float().unsqueeze(dim=0).to(ptu.device)
+        u = torch.from_numpy(u).float().unsqueeze(dim=0).to(ptu.device)
         with torch.no_grad():
-            x_next_pred = model.predict(x_reshaped, u)
+            x_next_pred, _ = model.predict(x_reshaped, u)
         predicted.append(x_next_pred.squeeze().cpu().numpy().reshape(obs_res, obs_res))
     true_x_next = [data[-1] for data in sampled_data]
     return true_x_next, predicted
@@ -193,7 +245,7 @@ def main(args):
     lam = args.lam
     epoches = args.num_iter
     iter_save = args.iter_save
-    exp_name = args.log_dir
+    exp_name = args.exp_name
     seed = args.seed
     stack = args.stack
 
@@ -213,6 +265,7 @@ def main(args):
                               shuffle=True, drop_last=False, num_workers=8)
     test_loader = DataLoader(test_set, batch_size=batch_size, 
                               shuffle=False, drop_last=False, num_workers=8)
+    exp_name = f'{exp_name}-{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'
 
     # ##### Debugging ####
     # return
@@ -222,16 +275,26 @@ def main(args):
     else:
         obs_type = 'serial'
 
-    obs_dim, z_dim, u_dim = settings[env_name][obs_type]
+    obs_dim, z_dim, u_dim, r_dim = settings[env_name][obs_type]
     obs_dim = obs_dim * stack
+
+    if args.z_dim is None:
+        args.z_dim = z_dim
+    else:
+        z_dim = args.z_dim
+
+    if args.r_dim is None:
+        args.r_dim = r_dim
+    else:
+        r_dim = args.r_dim
     
-    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, 
+    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, r_dim=r_dim,
                 env=env_name, stack=stack, use_cnn=args.cnn).to(ptu.device)
 
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
                            eps=1e-8, lr=lr, weight_decay=weight_decay)
 
-    writer = SummaryWriter('logs/' + env_name + '/' + exp_name)
+    writer = None
 
     result_path = './result/' + env_name + '/' + exp_name
     if not os.path.exists(result_path):
@@ -244,18 +307,24 @@ def main(args):
         json.dump(hparameter, f, indent=2)
 
     for i in range(epoches):
-        avg_loss = train(model, train_loader, lam, optimizer)
+        avg_loss, train_metrics = train(model, train_loader, optimizer, global_step=i, args=args)
         print('Epoch %d' % i)
         print("Training loss: %f" % (avg_loss))
         # evaluate on test set
-        state_loss, next_state_loss = evaluate(model, test_loader)
-        print('State loss: ' + str(state_loss))
-        print('Next state loss: ' + str(next_state_loss))
+        eval_metrics = evaluate(model, test_loader, args=args)
+        print('State loss: ' + str(eval_metrics['recon']))
+        print('Next state loss: ' + str(eval_metrics['pred']))
+
+        if writer is None:
+            writer = SummaryWriter('logs/' + env_name + '/' + exp_name, comment=args.comment)
+            writer.add_hparams(args.__dict__, {})
 
         # ...log the running loss
-        writer.add_scalar('training_loss', avg_loss, i)
-        writer.add_scalar('state_loss', state_loss, i)
-        writer.add_scalar('next_state_loss', next_state_loss, i)
+        writer.add_scalar('eval/training loss', avg_loss, i)
+        for key, value in eval_metrics.items():
+            writer.add_scalar('eval/' + key, value, i)
+        for key, value in train_metrics.items():
+            writer.add_scalar('train/' + key, value, i)
 
         # save model
         num_eval = 10 # number of images evaluated on tensorboard
@@ -267,7 +336,7 @@ def main(args):
 
             torch.save(model.state_dict(), result_path + '/model_' + str(i + 1))
             with open(result_path + '/loss_' + str(i + 1), 'w') as f:
-                f.write('\n'.join([str(state_loss), str(next_state_loss)]))
+                f.write('\n'.join([str(eval_metrics['recon']), str(eval_metrics['pred'])]))
 
     writer.close()
 
@@ -289,12 +358,14 @@ if __name__ == "__main__":
                         help='the L2 regularization')
     parser.add_argument('--lam', default=0.25, type=float, 
                         help='the weight of the consistency term')
+    parser.add_argument('--jac_weight', default=1.0, type=float,
+                        help='the weight of the Jacobian terms')
     parser.add_argument('--num_iter', default=5000, type=int, 
                         help='the number of epoches')
     parser.add_argument('--iter_save', default=1000, type=int, 
                         help='save model and result after this number of iterations')
-    parser.add_argument('--log_dir', required=True, type=str, 
-                        help='the directory to save training log (in `logs/env/log_dir`)')
+    parser.add_argument('--exp_name', required=True, type=str, 
+                        help='the directory to save training log (in `logs/env/exp_name`)')
     parser.add_argument('--seed', required=True, type=int, 
                         help='seed number')
     parser.add_argument('--cnn', action="store_true", 
@@ -303,6 +374,10 @@ if __name__ == "__main__":
                         help='number of frames to stack when training')
     parser.add_argument('--gpu', action="store_true",
                         help='use gpu if available')
+    parser.add_argument('--z_dim', type=int,
+                        help='latent space dimension (default to environment setting)')
+    parser.add_argument('--r_dim', type=int,
+                        help='residual dimension (default to environment setting)')
     
     args = parser.parse_args()
 

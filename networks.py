@@ -1,13 +1,14 @@
+from functools import partial
 import torch
 from torch import nn
 from normal import NormalDistribution
 from utils import pytorch_utils as ptu
 
-torch.set_default_dtype(torch.float64)
+torch.set_default_dtype(torch.float32)
 
-def weights_init(m):
+def weights_init(m, gain=1):
     if type(m) in [nn.Conv2d, nn.Linear, nn.ConvTranspose2d]:
-        torch.nn.init.orthogonal_(m.weight)
+        torch.nn.init.orthogonal_(m.weight, gain=gain)
 
 class Encoder(nn.Module):
     def __init__(self, net, obs_dim, z_dim):
@@ -39,27 +40,85 @@ class Decoder(nn.Module):
         """
         return self.net(z)
 
+
 class Transition(nn.Module):
-    def __init__(self, net, z_dim, u_dim):
+    def __init__(self, net, z_dim, u_dim, r_dim):
         super(Transition, self).__init__()
         self.net = net  # network to output the last layer before predicting A_t, B_t and o_t
         self.net.apply(weights_init)
         self.h_dim = self.net[-3].out_features
         self.z_dim = z_dim
         self.u_dim = u_dim
+        self.r_dim = r_dim
 
         self.fc_A = nn.Sequential(
-            nn.Linear(self.h_dim, self.z_dim * 2), # v_t and r_t
-            nn.Sigmoid()
+            nn.Linear(self.h_dim, self.z_dim * self.z_dim),
+            nn.Tanh()
         )
-        self.fc_A.apply(weights_init)
+        self.fc_A.apply(partial(weights_init, gain=0.1))
 
         self.fc_B = nn.Linear(self.h_dim, self.z_dim * self.u_dim)
         torch.nn.init.orthogonal_(self.fc_B.weight)
         self.fc_o = nn.Linear(self.h_dim, self.z_dim)
         torch.nn.init.orthogonal_(self.fc_o.weight)
 
+        self.fc_G = nn.Linear(self.h_dim, self.r_dim * self.z_dim)
+        torch.nn.init.orthogonal_(self.fc_G.weight)
+        self.fc_H = nn.Linear(self.h_dim, self.r_dim * self.u_dim)
+        torch.nn.init.orthogonal_(self.fc_H.weight)
+        self.fc_j = nn.Linear(self.h_dim, self.r_dim)
+        torch.nn.init.orthogonal_(self.fc_j.weight)
         self.device = ptu.device
+
+    def forward_h(self, z_bar_t):
+        return self.net(z_bar_t)
+
+    def forward_A(self, z_bar_t=None, h_t=None):
+        if h_t is None:
+            h_t = self.forward_h(z_bar_t)
+
+        A_t = torch.eye(self.z_dim, device=h_t.device) + self.fc_A(h_t).view(-1, self.z_dim, self.z_dim) * 0.1
+
+        return A_t
+
+    def forward_B(self, z_bar_t=None, h_t=None):
+        if h_t is None:
+            h_t = self.forward_h(z_bar_t)
+
+        B_t = self.fc_B(h_t)
+        B_t = B_t.view(-1, self.z_dim, self.u_dim)
+
+        return B_t
+
+    def forward_o(self, z_bar_t=None, h_t=None):
+        if h_t is None:
+            h_t = self.forward_h(z_bar_t)
+
+        return self.fc_o(h_t)
+    
+    def forward_G(self, z_bar_t=None, h_t=None):
+        if h_t is None:
+            h_t = self.forward_h(z_bar_t)
+
+        G_t = self.fc_G(h_t)
+        G_t = G_t.view(-1, self.r_dim, self.z_dim)
+
+        return G_t
+
+    def forward_H(self, z_bar_t=None, h_t=None):
+        if h_t is None:
+            h_t = self.forward_h(z_bar_t)
+
+        H_t = self.fc_H(h_t)
+        H_t = H_t.view(-1, self.r_dim, self.u_dim)
+
+        return H_t
+
+    def forward_j(self, z_bar_t=None, h_t=None):
+        if h_t is None:
+            h_t = self.forward_h(z_bar_t)
+
+        return self.fc_j(h_t)
 
     def forward(self, z_bar_t, q_z_t, u_t):
         """
@@ -68,23 +127,22 @@ class Transition(nn.Module):
         :param u_t: the action taken
         :return: the predicted q(z^_t+1 | z_t, z_bar_t, u_t)
         """
-        h_t = self.net(z_bar_t)
-        B_t = self.fc_B(h_t)
-        o_t = self.fc_o(h_t)
+        h_t = self.forward_h(z_bar_t)
 
-        v_t, r_t = self.fc_A(h_t).chunk(2, dim=1)
-        v_t = torch.unsqueeze(v_t, dim=-1)
-        r_t = torch.unsqueeze(r_t, dim=-2)
+        A_t = self.forward_A(h_t=h_t)
+        B_t = self.forward_B(h_t=h_t)
+        o_t = self.forward_o(h_t=h_t)
 
-        A_t = torch.eye(self.z_dim).repeat(z_bar_t.size(0), 1, 1).to(self.device) + torch.bmm(v_t, r_t)
-
-        B_t = B_t.view(-1, self.z_dim, self.u_dim)
+        G_t = self.forward_G(h_t=h_t)
+        H_t = self.forward_H(h_t=h_t)
+        j_t = self.forward_j(h_t=h_t)
 
         mu_t = q_z_t.mean
 
         mean = A_t.bmm(mu_t.unsqueeze(-1)).squeeze(-1) + B_t.bmm(u_t.unsqueeze(-1)).squeeze(-1) + o_t
+        cost_residual = G_t.bmm(mu_t.unsqueeze(-1)).squeeze(-1) + H_t.bmm(u_t.unsqueeze(-1)).squeeze(-1) + j_t
 
-        return mean, NormalDistribution(mean, logvar=q_z_t.logvar, v=v_t.squeeze(), r=r_t.squeeze(), A=A_t)
+        return mean, NormalDistribution(mean, logvar=q_z_t.logvar, A=A_t), cost_residual, (A_t, B_t, o_t, G_t, H_t, j_t)
 
 class PlanarEncoder(Encoder):
     def __init__(self, obs_dim = 1600, z_dim = 2, stack_num=1):
@@ -122,7 +180,7 @@ class PlanarDecoder(Decoder):
         super(PlanarDecoder, self).__init__(net, z_dim, obs_dim)
 
 class PlanarTransition(Transition):
-    def __init__(self, z_dim = 2, u_dim = 2):
+    def __init__(self, z_dim = 2, u_dim = 2, r_dim = 4):
         net = nn.Sequential(
             nn.Linear(z_dim, 100),
             nn.BatchNorm1d(100),
@@ -132,7 +190,7 @@ class PlanarTransition(Transition):
             nn.BatchNorm1d(100),
             nn.ReLU()
         )
-        super(PlanarTransition, self).__init__(net, z_dim, u_dim)
+        super(PlanarTransition, self).__init__(net, z_dim, u_dim, r_dim)
 
 class PendulumEncoder(Encoder):
     def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
@@ -165,7 +223,7 @@ class PendulumDecoder(Decoder):
         super(PendulumDecoder, self).__init__(net, z_dim, obs_dim)
 
 class PendulumTransition(Transition):
-    def __init__(self, z_dim = 3, u_dim = 1):
+    def __init__(self, z_dim = 3, u_dim = 1, r_dim = 4):
         net = nn.Sequential(
             nn.Linear(z_dim, 100),
             nn.BatchNorm1d(100),
@@ -175,7 +233,7 @@ class PendulumTransition(Transition):
             nn.BatchNorm1d(100),
             nn.ReLU()
         )
-        super(PendulumTransition, self).__init__(net, z_dim, u_dim)
+        super(PendulumTransition, self).__init__(net, z_dim, u_dim, r_dim)
 
 ################ IMAGE OBSERVATION ################
 class CNNEncoder(Encoder):
