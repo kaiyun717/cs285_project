@@ -7,28 +7,26 @@ import networks
 torch.set_default_dtype(torch.float32)
 
 class E2C(nn.Module):
-    def __init__(self, obs_dim, z_dim, u_dim, r_dim, env, stack=1, use_cnn=False):
+    def __init__(self, obs_shape, z_dim, u_dim, r_dim, env, stack, args):
         """
         - stack (int): number of frames to concatenate (defaults to `1`)
         """
         super(E2C, self).__init__()
         enc, dec, trans = load_config(env)
-        if use_cnn:
-            enc = networks.CNNEncoder
-            dec = networks.CNNDecoder
 
-        self.obs_dim = obs_dim
+        self.obs_shape = obs_shape
         self.z_dim = z_dim
         self.u_dim = u_dim
         self.r_dim = r_dim
         self.stack = stack
 
-        self.encoder = enc(obs_dim=obs_dim, z_dim=z_dim, stack_num=self.stack)
-        # self.encoder.apply(init_weights)
-        self.decoder = dec(z_dim=z_dim, obs_dim=obs_dim, stack_num=self.stack)
-        # self.decoder.apply(init_weights)
-        self.trans = trans(z_dim=z_dim, u_dim=u_dim, r_dim=r_dim)
-        # self.trans.apply(init_weights)
+        if args.cnn:
+            self.encoder = networks.make_cnn_encoder(obs_shape=obs_shape, z_dim=z_dim, n_filters=args.cnn_n_filters)
+            self.decoder = networks.make_cnn_decoder(obs_shape=obs_shape, z_dim=z_dim, n_filters=args.cnn_n_filters)
+        else:
+            self.encoder = enc(obs_shape=obs_shape, z_dim=z_dim, use_batchnorm=args.mlp_use_batchnorm, n_layers=args.mlp_n_layers, d_hidden=args.mlp_enc_d_hidden)
+            self.decoder = dec(obs_shape=obs_shape, z_dim=z_dim, use_batchnorm=args.mlp_use_batchnorm, n_layers=args.mlp_n_layers, d_hidden=args.mlp_dec_d_hidden)
+        self.trans = trans(z_dim=z_dim, u_dim=u_dim, r_dim=r_dim, use_vr=args.use_vr, d_hidden=args.trans_d_hidden, n_layers=args.trans_n_layers)
 
     def encode(self, x):
         """
@@ -60,7 +58,12 @@ class E2C(nn.Module):
 
     def forward(self, x, u, x_next):
         mu, logvar = self.encode(x)
-        z = self.reparam(mu, logvar)
+
+        if self.training:
+            z = self.reparam(mu, logvar)
+        else:
+            z = mu
+
         q_z = NormalDistribution(mu, logvar)
 
         x_recon = self.decode(z)

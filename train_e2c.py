@@ -1,6 +1,6 @@
 from collections import defaultdict
 import datetime
-from tensorboardX import SummaryWriter
+import wandb
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -27,30 +27,27 @@ plt.switch_backend('agg')
 torch.set_default_dtype(torch.float32)
 
 device = torch.device("cuda")
-                                  # obs,    z,  u   r
-settings = {'cartpole': {'image': (64*64,   8,  1,  3)},
-            'planar':   {'image': (40*40,   8,  2,  3)},
-            'pendulum': {'image': (48*48,   8,  1,  4)},
-            'hopper':   {'image': (64*64,  16,  3,  8),
-                        'serial': (11,     16,  3,  8)}}
-
-step_sizes = {'cartpole': 4,
-             'planar':    4,
-             'pendulum':  4,
-             'hopper':    4}
+                                  # obs,            z,  u   r
+settings = {'cartpole': {'image': ((2, 64, 64),     8,  1,  3)},
+            'planar':   {'image': ((2, 40, 40),     8,  2,  3)},
+            'pendulum': {'image': ((2, 48, 48),     8,  1,  4)},
+            'hopper':   {'image': ((9, 64, 64),     16, 3,  8),
+                        'serial': (11,              16,  3,  8)}}
 
 num_eval = 10 # number of images evaluated on tensorboard
 
 
-def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, transition_model, z_residual, dyn_mats, args, recon_loss='bce'):
+def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_pred, cost, cost_pred, transition_model, z_residual, dyn_mats, args, step):
+    recon_loss = args.recon_loss
+
     if recon_loss == 'bce':
         recon_loss = torch.nn.BCELoss(reduction='none')
+        recon_weight = 1
     elif recon_loss == 'mse':
         recon_loss = torch.nn.MSELoss(reduction='none')
+        recon_weight = 10
     elif recon_loss == 'l1':
         recon_loss = torch.nn.L1Loss(reduction='none')
-
-    A_t, B_t, _, G_t, H_t, _ = dyn_mats
 
     assert x_recon.min() >= 0 and x_recon.max() <= 1
     assert x_next_pred.min() >= 0 and x_next_pred.max() <= 1
@@ -58,8 +55,8 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
     assert x_next.min() >= 0 and x_next.max() <= 1
 
     # lower-bound loss
-    recon_term = recon_loss(x_recon, x).sum(dim=1).mean(dim=0)
-    pred_loss = recon_loss(x_next_pred, x_next).sum(dim=1).mean(dim=0)
+    recon_term = recon_weight * recon_loss(x_recon, x).sum(dim=(1, 2, 3)).mean(dim=0)
+    pred_loss = recon_weight * recon_loss(x_next_pred, x_next).sum(dim=(1, 2, 3)).mean(dim=0)
 
     kl_term = - 0.5 * torch.mean(torch.sum(1 + q_z.logvar - q_z.mean.pow(2) - q_z.logvar.exp(), dim = 1))
 
@@ -70,36 +67,41 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
 
     cost_term = F.mse_loss(cost_pred, cost)
 
-    # jacobian loss
-    zbar = q_z.mean
-    dz = torch.randn(zbar.shape, device=device) * 0.3
-    du = torch.randn(u_t.shape, device=device) * 0.3
-    zhat = zbar + dz
-    uhat = u_t + du
-    dz_next_jac = A_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + B_t.bmm(du.unsqueeze(-1)).squeeze(-1)
-    _, zhat_next_true, zhat_residual, _ = transition_model.forward(zbar, NormalDistribution(zhat, q_z.logvar), uhat)
-    zhat_next_jac = NormalDistribution(q_z_next_pred.mean + dz_next_jac, q_z.logvar, A=A_t)
-    dresidual_jac = G_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + H_t.bmm(du.unsqueeze(-1)).squeeze(-1)
-
-    jac_loss_dyn = NormalDistribution.KL_divergence(
-        zhat_next_jac,
-        zhat_next_true,
-        # NormalDistribution(zhat_next_true.mean.detach(), zhat_next_true.logvar.detach(), A=zhat_next_true.A.detach()),
-    ).sum(dim=-1)
-    jac_loss_res = F.mse_loss(z_residual + dresidual_jac, zhat_residual)
-
     results = lower_bound + args.lam * consis_term + cost_term + args.jac_weight * (jac_loss_dyn + jac_loss_res), {
         'recon': recon_term.item(),
         'pred': pred_loss.item(),
         'kl': kl_term.item(),
         'consis': consis_term.item(),
         'cost': cost_term.item(),
-        'jac_dyn': jac_loss_dyn.item(),
-        'jac_cost': jac_loss_res.item(),
-        'jac_dyn_err': (zhat_next_jac.mean - zhat_next_true.mean).pow(2).sum(-1).mean().sqrt().item(),
         'dyn_error': (q_z_next_pred.mean - q_z_next.mean).pow(2).sum(-1).mean().sqrt().item(),
         'z_std_rms': q_z.mean.pow(2).sum(-1).mean().sqrt().item(),
     }
+
+    if dyn_mats is not None:
+        A_t, B_t, _, G_t, H_t, _ = dyn_mats
+
+        # jacobian loss
+        zbar = q_z.mean
+        dz = torch.randn(zbar.shape, device=device) * 0.3
+        du = torch.randn(u_t.shape, device=device) * 0.3
+        zhat = zbar + dz
+        uhat = u_t + du
+        dz_next_jac = A_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + B_t.bmm(du.unsqueeze(-1)).squeeze(-1)
+        _, zhat_next_true, zhat_residual, _ = transition_model.forward(zhat, NormalDistribution(zhat, q_z.logvar), uhat)
+        zhat_next_jac = NormalDistribution(q_z_next_pred.mean + dz_next_jac, q_z.logvar, A=A_t)
+        dresidual_jac = G_t.bmm(dz.unsqueeze(-1)).squeeze(-1) + H_t.bmm(du.unsqueeze(-1)).squeeze(-1)
+
+        jac_loss_dyn = NormalDistribution.KL_divergence(
+            zhat_next_jac,
+            zhat_next_true,
+            # NormalDistribution(zhat_next_true.mean.detach(), zhat_next_true.logvar.detach(), A=zhat_next_true.A.detach()),
+        ).sum(dim=-1)
+        jac_loss_res = F.mse_loss(z_residual + dresidual_jac, zhat_residual)
+
+        results['jac_dyn'] = jac_loss_dyn.item()
+        results['jac_cost'] = jac_loss_res.item()
+        results['jac_dyn_err'] = (zhat_next_jac.mean - zhat_next_true.mean).pow(2).sum(-1).mean().sqrt().item()
+
     return results
 
 def train(model, train_loader, optimizer, global_step, args):
@@ -138,7 +140,8 @@ def train(model, train_loader, optimizer, global_step, args):
                     transition_model=model.trans,
                     z_residual=cost_res_pred,
                     dyn_mats=dyn_mats,
-                    args=args
+                    args=args,
+                    step=global_step,
                 )
 
         avg_loss += loss.item()
@@ -164,15 +167,10 @@ def evaluate(model, test_loader, args):
             done = batch["dones"].to(ptu.device)
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
-            if args.cnn:
-                x = x.view(-1, model.obs_dim)
-                x_next = x_next.view(-1, model.obs_dim)
-                x_recon = x_recon.view(-1, model.obs_dim)
-                x_next_pred = x_next_pred.view(-1, model.obs_dim)
 
-            x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
             cost_pred = cost_res_pred.pow(2).sum(dim=1)
-            cost = -reward.float().to(ptu.device)
+            cost = -reward
+
             _, metrics_it = compute_loss(
                         x=x,                            # 'before' obs
                         u_t=u,                          # action
@@ -187,8 +185,10 @@ def evaluate(model, test_loader, args):
                         transition_model=model.trans,
                         z_residual=cost_res_pred,
                         dyn_mats=dyn_mats,
-                        args=args
+                        args=args,
+                        step=0,
                     )
+
             for key, value in metrics_it.items():
                 metrics[key] += value
 
@@ -256,7 +256,6 @@ def main(args):
     batch_size = args.batch_size
     lr = args.lr
     weight_decay = args.decay
-    lam = args.lam
     epoches = args.num_iter
     iter_save = args.iter_save
     exp_name = args.exp_name
@@ -307,18 +306,7 @@ def main(args):
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
                            eps=1e-8, lr=lr, weight_decay=weight_decay)
 
-    writer = None
-
-    result_path = './result/' + env_name + '/' + exp_name
-    if not os.path.exists(result_path):
-        os.makedirs(result_path)
-    with open(result_path + '/hyperparameters.json', 'w') as f:
-        hparameter = {
-            **args.__dict__,
-            **{'obs_dim': obs_dim, 'z_dim': z_dim, 'u_dim': u_dim}              
-        }
-        json.dump(hparameter, f, indent=2)
-
+    os.makedirs('/tmp/checkpoint', exist_ok=True)
     for i in range(epoches):
         avg_loss, train_metrics = train(model, train_loader, optimizer, global_step=i, args=args)
         print('Epoch %d' % i)
@@ -328,30 +316,24 @@ def main(args):
         print('State loss: ' + str(eval_metrics['recon']))
         print('Next state loss: ' + str(eval_metrics['pred']))
 
-        if writer is None:
-            writer = SummaryWriter('logs/' + env_name + '/' + exp_name, comment=args.comment)
-            writer.add_hparams(args.__dict__, {})
+        wandb.init(project="e2c", config=args.__dict__, notes=exp_name)
 
         # ...log the running loss
-        writer.add_scalar('eval/training loss', avg_loss, i)
-        for key, value in eval_metrics.items():
-            writer.add_scalar('eval/' + key, value, i)
-        for key, value in train_metrics.items():
-            writer.add_scalar('train/' + key, value, i)
+        wandb.log({
+            **{f'eval/{key}': value for key, value in eval_metrics.items()},
+            **{f'train/{key}': value for key, value in train_metrics.items()},
+        }, step=i, commit=True)
 
         # save model
         num_eval = 10 # number of images evaluated on tensorboard
         if (i + 1) % iter_save == 0:
-            writer.add_figure('actual vs. predicted observations',
-                              plot_preds(model, env_name, vis_loader, num_eval, stack),
-                              global_step=i)
+            wandb.log({
+                'actual vs. predicted observations': wandb.Image(plot_preds(model, env_name, vis_loader, num_eval, stack)),
+            }, step=i+1, commit=False)
             print('Saving the model.............')
 
-            torch.save(model.state_dict(), result_path + '/model_' + str(i + 1))
-            with open(result_path + '/loss_' + str(i + 1), 'w') as f:
-                f.write('\n'.join([str(eval_metrics['recon']), str(eval_metrics['pred'])]))
-
-    writer.close()
+            torch.save(model.state_dict(), '/tmp/checkpoint/model_' + str(i + 1))
+            wandb.save('/tmp/checkpoint/model_' + str(i + 1))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='train e2c model')
@@ -395,6 +377,18 @@ if __name__ == "__main__":
                         help='latent space dimension (default to environment setting)')
     parser.add_argument('--r_dim', type=int,
                         help='residual dimension (default to environment setting)')
+    parser.add_argument('--recon_loss', type=str, default='bce',
+                        help='reconstruction loss type (l1, bce or mse)')
+    parser.add_argument('--use_vr', action="store_true",
+                        help='use A=I + vr^T')
+    # args.mlp_use_batchnorm, n_layers=args.mlp_n_layers, d_hidden=args.mlp_enc_d_hidden
+    parser.add_argument('--mlp_use_batchnorm', action="store_true")
+    parser.add_argument('--mlp_n_layers', type=int, default=2)
+    parser.add_argument('--mlp_enc_d_hidden', type=int, default=256)
+    parser.add_argument('--mlp_dec_d_hidden', type=int, default=256)
+    parser.add_argument('--trans_d_hidden', type=int, default=256)
+    parser.add_argument('--trans_n_layers', type=int, default=3)
+    parser.add_argument('--cnn_n_filters', type=int, default=32)
     
     args = parser.parse_args()
 

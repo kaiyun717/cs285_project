@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from normal import NormalDistribution
 from utils import pytorch_utils as ptu
+import numpy as np
 
 torch.set_default_dtype(torch.float32)
 
@@ -11,12 +12,10 @@ def weights_init(m, gain=1):
         torch.nn.init.orthogonal_(m.weight, gain=gain)
 
 class Encoder(nn.Module):
-    def __init__(self, net, obs_dim, z_dim):
+    def __init__(self, net):
         super(Encoder, self).__init__()
         self.net = net
         self.net.apply(weights_init)
-        self.img_dim = obs_dim
-        self.z_dim = z_dim
 
     def forward(self, x):
         """
@@ -26,12 +25,10 @@ class Encoder(nn.Module):
         return self.net(x).chunk(2, dim = 1) # first half is mean, second half is logvar
 
 class Decoder(nn.Module):
-    def __init__(self, net, z_dim, obs_dim):
+    def __init__(self, net):
         super(Decoder, self).__init__()
         self.net = net
         self.net.apply(weights_init)
-        self.z_dim = z_dim
-        self.obs_dim = obs_dim
 
     def forward(self, z):
         """
@@ -42,20 +39,25 @@ class Decoder(nn.Module):
 
 
 class Transition(nn.Module):
-    def __init__(self, net, z_dim, u_dim, r_dim):
+    def __init__(self, net, z_dim, u_dim, r_dim, use_vr, d_hidden):
         super(Transition, self).__init__()
         self.net = net  # network to output the last layer before predicting A_t, B_t and o_t
         self.net.apply(weights_init)
-        self.h_dim = self.net[-3].out_features
+        self.h_dim = d_hidden
         self.z_dim = z_dim
         self.u_dim = u_dim
         self.r_dim = r_dim
+        self.use_vr = use_vr
 
-        self.fc_A = nn.Sequential(
-            nn.Linear(self.h_dim, self.z_dim * self.z_dim),
-            nn.Tanh()
-        )
-        self.fc_A.apply(partial(weights_init, gain=0.1))
+        if use_vr:
+            self.fc_vr = nn.Linear(self.h_dim, 2 * self.z_dim)
+            torch.nn.init.orthogonal_(self.fc_vr.weight)
+        else:
+            self.fc_A = nn.Sequential(
+                nn.Linear(self.h_dim, self.z_dim * self.z_dim),
+                nn.Tanh()
+            )
+            self.fc_A.apply(partial(weights_init, gain=0.1))
 
         self.fc_B = nn.Linear(self.h_dim, self.z_dim * self.u_dim)
         torch.nn.init.orthogonal_(self.fc_B.weight)
@@ -77,9 +79,12 @@ class Transition(nn.Module):
         if h_t is None:
             h_t = self.forward_h(z_bar_t)
 
-        A_t = torch.eye(self.z_dim, device=h_t.device) + self.fc_A(h_t).view(-1, self.z_dim, self.z_dim) * 0.1
-
-        return A_t
+        if self.use_vr:
+            v, r = self.fc_vr(h_t).chunk(2, dim=1)
+            return torch.eye(self.z_dim, device=h_t.device) + torch.bmm(v.view(-1, self.z_dim, 1), r.view(-1, 1, self.z_dim))
+        else:
+            A_t = torch.eye(self.z_dim, device=h_t.device) + self.fc_A(h_t).view(-1, self.z_dim, self.z_dim)
+            return A_t
 
     def forward_B(self, z_bar_t=None, h_t=None):
         if h_t is None:
@@ -144,209 +149,113 @@ class Transition(nn.Module):
 
         return mean, NormalDistribution(mean, logvar=q_z_t.logvar, A=A_t), cost_residual, (A_t, B_t, o_t, G_t, H_t, j_t)
 
-class PlanarEncoder(Encoder):
-    def __init__(self, obs_dim = 1600, z_dim = 2, stack_num=1):
-        net = nn.Sequential(
-            nn.Linear(obs_dim, 150),
-            nn.BatchNorm1d(150),
-            nn.ReLU(),
-
-            nn.Linear(150, 150),
-            nn.BatchNorm1d(150),
-            nn.ReLU(),
-
-            nn.Linear(150, 150),
-            nn.BatchNorm1d(150),
-            nn.ReLU(),
-
-            nn.Linear(150, z_dim * 2)
-        )
-        super(PlanarEncoder, self).__init__(net, obs_dim, z_dim)
-
-class PlanarDecoder(Decoder):
-    def __init__(self, z_dim = 2, obs_dim = 1600, stack_num=1):
-        net = nn.Sequential(
-            nn.Linear(z_dim, 200),
-            nn.BatchNorm1d(200),
-            nn.ReLU(),
-
-            nn.Linear(200, 200),
-            nn.BatchNorm1d(200),
-            nn.ReLU(),
-
-            nn.Linear(200, 1600),
-            nn.Sigmoid()
-        )
-        super(PlanarDecoder, self).__init__(net, z_dim, obs_dim)
-
-class PlanarTransition(Transition):
-    def __init__(self, z_dim = 2, u_dim = 2, r_dim = 4):
-        net = nn.Sequential(
-            nn.Linear(z_dim, 100),
-            nn.BatchNorm1d(100),
-            nn.ReLU(),
-
-            nn.Linear(100, 100),
-            nn.BatchNorm1d(100),
-            nn.ReLU()
-        )
-        super(PlanarTransition, self).__init__(net, z_dim, u_dim, r_dim)
-
-class PendulumEncoder(Encoder):
-    def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
-        net = nn.Sequential(
-            nn.Linear(obs_dim, 800),
-            nn.BatchNorm1d(800),
-            nn.ReLU(),
-
-            nn.Linear(800, 800),
-            nn.BatchNorm1d(800),
-            nn.ReLU(),
-
-            nn.Linear(800, z_dim * 2)
-        )
-        super(PendulumEncoder, self).__init__(net, obs_dim, z_dim)
-
-class PendulumDecoder(Decoder):
-    def __init__(self, z_dim = 3, obs_dim = 4608, stack_num=1):
-        net = nn.Sequential(
-            nn.Linear(z_dim, 800),
-            nn.BatchNorm1d(800),
-            nn.ReLU(),
-
-            nn.Linear(800, 800),
-            nn.BatchNorm1d(800),
-            nn.ReLU(),
-
-            nn.Linear(800, obs_dim),
-            nn.Sigmoid(),
-        )
-        super(PendulumDecoder, self).__init__(net, z_dim, obs_dim)
-
-class PendulumTransition(Transition):
-    def __init__(self, z_dim = 3, u_dim = 1, r_dim = 4):
-        net = nn.Sequential(
-            nn.Linear(z_dim, 100),
-            nn.BatchNorm1d(100),
-            nn.ReLU(),
-
-            nn.Linear(100, 100),
-            nn.BatchNorm1d(100),
-            nn.ReLU()
-        )
-        super(PendulumTransition, self).__init__(net, z_dim, u_dim, r_dim)
-
 ################ IMAGE OBSERVATION ################
-class CNNEncoder(Encoder):
-    """ 
-    input should be (B*S, C, H, W) 
-    - B is batch, 
-    - S is stack number, 
-    - C is input channel, 
-    - H == W
-    """
-    def __init__(self, obs_dim = 4608, z_dim = 512, input_channel=1, n_filters=32, stack_num=4):
-        #### DEBUG ####
-        print('obs_dim: ', obs_dim)
-        print('input_channel: ', input_channel)
-        ###############
+def make_cnn_encoder(obs_shape, z_dim, n_filters=32):
+    channels, width, height = obs_shape
+    return Encoder(nn.Sequential(
+        nn.Conv2d(channels, n_filters, 5, stride=2, padding=2),
+        nn.BatchNorm2d(n_filters),
+        nn.ReLU(),
 
-        net = nn.Sequential(
-            nn.Conv2d(input_channel*stack_num, n_filters, 5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(n_filters, n_filters, 5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(n_filters, n_filters, 5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            #nn.Unflatten(0, (-1, stack_num)),
-            nn.Flatten(start_dim=1, end_dim=-1), #(B, S*C, H, W)
-            nn.Linear(n_filters * (obs_dim//4//4//4//stack_num), z_dim * 2)
-        )
-        super(CNNEncoder, self).__init__(net, obs_dim, z_dim)
+        nn.Conv2d(n_filters, n_filters, 5, stride=2, padding=2),
+        nn.BatchNorm2d(n_filters),
+        nn.ReLU(),
 
+        nn.Conv2d(n_filters, n_filters, 5, stride=2, padding=2),
+        nn.BatchNorm2d(n_filters),
+        nn.ReLU(),
 
-class CNNDecoder(Decoder):
-    def __init__(self, z_dim = 512, obs_dim = 4608, input_channel=1, n_filters=32, stack_num=4):
-        last_dim = obs_dim//stack_num//4//4//4
-        h = round(last_dim ** (1/2))
-        w = last_dim // h
-        net = nn.Sequential(
-            nn.Linear(z_dim, n_filters * h * w),
-            nn.Unflatten(-1, (n_filters, h, w)),
-            #nn.Flatten(start_dim=0, end_dim=1),
-            nn.Upsample(scale_factor=2),
-            nn.ConvTranspose2d(n_filters, n_filters, 5, padding=2),
-            nn.ReLU(),
-            nn.Upsample(scale_factor=2),
-            nn.ConvTranspose2d(n_filters, n_filters, 5, padding=2),
-            nn.ReLU(),
-            nn.Upsample(scale_factor=2),
-            nn.ConvTranspose2d(n_filters, input_channel*stack_num, 5, padding=2),
-            nn.Sigmoid()
-        )
-        super(CNNDecoder, self).__init__(net, z_dim, obs_dim)
+        nn.Flatten(),
+
+        nn.Linear((n_filters * width*height)//64, (n_filters * width*height)//64),
+        nn.ReLU(),
+        nn.Linear((n_filters * width*height)//64, (n_filters * width*height)//64),
+        nn.ReLU(),
+        nn.Linear((n_filters * width*height)//64, z_dim * 2),
+    ))
+
+def make_cnn_decoder(obs_shape, z_dim, n_filters=32):
+    channels, width, height = obs_shape
+    return Decoder(nn.Sequential(
+        nn.Linear(z_dim, (n_filters * height * width) // 64),
+        nn.ReLU(),
+        nn.Linear((n_filters * width*height)//64, (n_filters * width*height)//64),
+        nn.ReLU(),
+        nn.Linear((n_filters * width*height)//64, (n_filters * width*height)//64),
+        nn.ReLU(),
+
+        nn.Unflatten(-1, (n_filters, height // 8, width // 8)),
+
+        nn.ConvTranspose2d(n_filters, n_filters, 4, stride=2, padding=1, output_padding=0),
+        nn.BatchNorm2d(n_filters),
+        nn.ReLU(),
+
+        nn.ConvTranspose2d(n_filters, n_filters, 4, stride=2, padding=1, output_padding=0),
+        nn.BatchNorm2d(n_filters),
+        nn.ReLU(),
+
+        nn.ConvTranspose2d(n_filters, n_filters, 4, stride=2, padding=1, output_padding=0),
+        nn.BatchNorm2d(n_filters),
+        nn.ReLU(),
+
+        nn.ConvTranspose2d(n_filters, channels, 5, stride=1, padding=2, output_padding=0),
+        nn.Sigmoid(),
+    ))
+
 
 ################ SERIAL OBSERVATION ################
-class SerialEncoder(Encoder):
-    """ 
-    input should be (B, O*S) 
-    - B is batch, 
-    - S is stack number, 
-    - O is observation size
-    """
-    def __init__(self, obs_dim = 4608, z_dim = 3, stack_num=1):
-        net = nn.Sequential(
-            nn.Linear(obs_dim, 800),
-            nn.BatchNorm1d(800),
+def make_serial_encoder(obs_shape, z_dim, d_hidden=800, n_layers=3, use_batchnorm=True):
+    return Encoder(nn.Sequential(
+        nn.Flatten(),
+
+        nn.Linear(np.prod(obs_shape), d_hidden),
+        nn.BatchNorm1d(d_hidden),
+        nn.ReLU(),
+
+        *[nn.Sequential(
+            nn.Linear(d_hidden, d_hidden),
+            nn.BatchNorm1d(d_hidden) if use_batchnorm else nn.Identity(),
             nn.ReLU(),
+        ) for _ in range(n_layers)],
 
-            nn.Linear(800, 800),
-            nn.BatchNorm1d(800),
+        nn.Linear(d_hidden, z_dim * 2)
+    ))
+
+def make_serial_decoder(obs_shape, z_dim, d_hidden=800, n_layers=3, use_batchnorm=True):
+    return Decoder(nn.Sequential(
+        nn.Linear(z_dim, d_hidden),
+        nn.BatchNorm1d(d_hidden),
+        nn.ReLU(),
+
+        *[nn.Sequential(
+            nn.Linear(d_hidden, d_hidden),
+            nn.BatchNorm1d(d_hidden) if use_batchnorm else nn.Identity(),
             nn.ReLU(),
+        ) for _ in range(n_layers)],
 
-            nn.Linear(800, z_dim * 2)
-        )
-        super(SerialEncoder, self).__init__(net, obs_dim, z_dim)
-
-
-class SerialDecoder(Decoder):
-    def __init__(self, z_dim = 3, obs_dim = 4608, stack_num=1):
-        net = nn.Sequential(
-            nn.Linear(z_dim, 800),
-            nn.BatchNorm1d(800),
-            nn.ReLU(),
-
-            nn.Linear(800, 800),
-            nn.BatchNorm1d(800),
-            nn.ReLU(),
-
-            nn.Linear(800, obs_dim),
-            nn.Sigmoid(),
-        )
-        super(SerialDecoder, self).__init__(net, z_dim, obs_dim)
+        nn.Linear(d_hidden, np.prod(obs_shape)),
+        nn.Unflatten(1, obs_shape),
+        nn.Sigmoid(),
+    ))
 
 ################ MUJOCO TRANSITION ################
 class MujocoTransition(Transition):
-    def __init__(self, u_dim, z_dim=512, r_dim=16):   # NOTE: order is different!
+    def __init__(self, u_dim, z_dim, r_dim, d_hidden=256, n_layers=3, use_vr=False):   # NOTE: order is different!
         net = nn.Sequential(
-            nn.Linear(z_dim, 100),
-            nn.BatchNorm1d(100),
+            nn.Linear(z_dim, d_hidden),
             nn.ReLU(),
-
-            nn.Linear(100, 100),
-            nn.BatchNorm1d(100),
-            nn.ReLU()
+            *[nn.Sequential(
+                nn.Linear(d_hidden, d_hidden),
+                nn.ReLU(),
+            ) for _ in range(n_layers)],
         )
-        super().__init__(net, z_dim, u_dim, r_dim)
+        super().__init__(net, z_dim, u_dim, r_dim, use_vr=use_vr, d_hidden=d_hidden)
 
 CONFIG = {
-    'planar': (SerialEncoder, SerialDecoder, MujocoTransition),
-    'pendulum': (SerialEncoder, SerialDecoder, MujocoTransition),
-    'hopper': (SerialEncoder, SerialDecoder, MujocoTransition),
-    'cartpole': (SerialEncoder, SerialDecoder, MujocoTransition)
+    'planar': (make_serial_encoder, make_serial_decoder, MujocoTransition),
+    'pendulum': (make_serial_encoder, make_serial_decoder, MujocoTransition),
+    'hopper': (make_serial_encoder, make_serial_decoder, MujocoTransition),
+    'cartpole': (make_serial_encoder, make_serial_decoder, MujocoTransition)
 }
 
 def load_config(name):
