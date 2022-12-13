@@ -11,6 +11,8 @@ import sys
 import numpy as np
 import time
 from utils import pytorch_utils as ptu
+import torch.utils.data.dataloader
+import torch.utils.data
 
 import os
 import json
@@ -19,6 +21,8 @@ from e2c_model import E2C
 from tqdm import tqdm
 import datasets
 from data.sample_eval import sample_eval_data
+
+plt.switch_backend('agg')
 
 torch.set_default_dtype(torch.float32)
 
@@ -106,35 +110,19 @@ def train(model, train_loader, optimizer, global_step, args):
 
     num_batches = len(train_loader)
 
-    print("Number of batches: ", num_batches)   # debug
-    print("Train Loader `batch_size`: ", train_loader.batch_size)
+    for _, batch in tqdm(enumerate(train_loader, 0), total=num_batches):
+        x = batch["observations"].to(ptu.device)
+        u = batch["actions"].to(ptu.device)
+        reward = batch["rewards"].to(ptu.device)
+        x_next = batch["next_observations"].to(ptu.device)
+        done = batch["dones"].to(ptu.device)
 
-    for _, (x, u, x_next, reward, done) in tqdm(enumerate(train_loader, 0), total=num_batches):
-        # x: 'before' obs in batch & stack (num_batch, obs_dim)
-        # u: 'action' in batch (num_batch, action)
-        # x_next: 'after' obs in batch (num_batch, obs_dim)
-        
-        if args.cnn:
-            x = x.float().to(ptu.device)
-            x_next = x_next.float().to(ptu.device)
-        else:
-            x = x.view(-1, model.obs_dim).float().to(ptu.device)
-            x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
-            
-        u = u.float().to(ptu.device)
         optimizer.zero_grad()
 
-        cost = -reward.float().to(ptu.device)
+        cost = -reward
 
         x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
         cost_pred = cost_res_pred.pow(2).sum(dim=1)
-
-        if args.cnn:
-            x = x.view(-1, model.obs_dim)
-            x_next = x_next.view(-1, model.obs_dim)
-            x_recon = x_recon.view(-1, model.obs_dim)
-            x_next_pred = x_next_pred.view(-1, model.obs_dim)
-            # NOTE: what is this?
 
         loss, metrics_it = compute_loss(
                     x=x,                            # 'before' obs
@@ -168,14 +156,12 @@ def evaluate(model, test_loader, args):
     num_batches = len(test_loader)
     metrics = defaultdict(float)
     with torch.no_grad():
-        for x, u, x_next, reward, d in test_loader:  # state, action, next_state, reward, done
-            if args.cnn:
-                x = x.float().to(ptu.device)
-                x_next = x_next.float().to(ptu.device)
-            else:
-                x = x.view(-1, model.obs_dim).float().to(ptu.device)
-                x_next = x_next.view(-1, model.obs_dim).float().to(ptu.device)
-            u = u.float().to(ptu.device)
+        for batch in test_loader:  # state, action, next_state, reward, done
+            x = batch["observations"].to(ptu.device)
+            u = batch["actions"].to(ptu.device)
+            reward = batch["rewards"].to(ptu.device)
+            x_next = batch["next_observations"].to(ptu.device)
+            done = batch["dones"].to(ptu.device)
 
             x_recon, x_next_pred, q_z, q_z_next_pred, q_z_next, cost_res_pred, dyn_mats = model(x, u, x_next)
             if args.cnn:
@@ -211,25 +197,30 @@ def evaluate(model, test_loader, args):
 # code for visualizing the training process
 def predict_x_next(model, env_name, vis_loader, num_eval, stack):
     # first sample a true trajectory from the environment
-    obs_res = int(np.sqrt(settings[env_name]['image'][0]))
-    step_size = step_sizes[env_name]
+    obs_res, _, n_channels = settings[env_name]['image'][0]
 
     # use the trained model to predict the next observation
     predicted = []
     true_x = []
-    for x, u, x_next, _, _ in vis_loader:
-        x = x[0].cpu().numpy()
-        u = u[0].cpu().numpy()
-        x_next = x_next[0].cpu().numpy()
-        x_reshaped = x.reshape(-1)
-        x_reshaped = torch.from_numpy(x_reshaped).float().unsqueeze(dim=0).to(ptu.device)
-        u = torch.from_numpy(u).float().unsqueeze(dim=0).to(ptu.device)
+    for batch in vis_loader:
+        x = batch["observations"].to(ptu.device)
+        u = batch["actions"].to(ptu.device)
+        reward = batch["rewards"].to(ptu.device)
+        x_next = batch["next_observations"].to(ptu.device)
+        done = batch["dones"].to(ptu.device)
+
         with torch.no_grad():
-            x_recon, x_next_pred, _, _, _, _, _ = model.forward(x_reshaped, u, x_reshaped)
-        predicted.append(np.concatenate(
-            tuple(x_recon.cpu().numpy().reshape(stack, obs_res, obs_res)) + tuple(x_next_pred.squeeze().cpu().numpy().reshape(stack, obs_res, obs_res))
-        ))
-        true_x.append(np.concatenate((tuple(x) + tuple(x_next))))
+            x_recon, x_next_pred, _, _, _, _, _ = model.forward(x, u, x_next)
+
+        for i in range(x.shape[0]):
+            predicted.append(np.concatenate((
+                *tuple(x_recon[i].cpu().numpy()),
+                *tuple(x_next_pred[i].cpu().numpy()),
+            )))
+            true_x.append(np.concatenate((
+                *tuple(x[i].cpu().numpy()),
+                *tuple(x_next[i].cpu().numpy()),
+            )))
 
         if len(predicted) > num_eval:
             break
@@ -276,14 +267,22 @@ def main(args):
     torch.manual_seed(seed)
     ptu.init_gpu(use_gpu=args.gpu)
 
+    obs_type = 'image'
+    obs_shape, z_dim, u_dim, r_dim = settings[env_name][obs_type]
+    obs_dim = np.prod(obs_shape)
+    channels, height, width = obs_shape
+
     dataset = datasets.OfflineDataset(
         dir='./data/samples/' + env_name + '/' + sample_path,
-        stack=stack
+        stack=stack,
+        image_size=height,
+        channels=channels,
     )
     
     print('OFFLINE DATASET SIZE: ', len(dataset))
 
-    train_set, test_set = dataset[:int(len(dataset) * propor)], dataset[int(len(dataset) * propor):]
+    train_set, test_set = torch.utils.data.random_split(dataset, [int(len(dataset) * propor), len(dataset) - int(len(dataset) * propor)])
+
     train_loader = DataLoader(train_set, batch_size=batch_size, 
                               shuffle=True, drop_last=False, num_workers=8)
     test_loader = DataLoader(test_set, batch_size=batch_size, 
@@ -291,17 +290,6 @@ def main(args):
     vis_loader = DataLoader(test_set, batch_size=1, 
                             shuffle=True, drop_last=False, num_workers=8)
     exp_name = f'{exp_name}-{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}'
-
-    # ##### Debugging ####
-    # return
-    # ####################
-    if dataset.return_obs_image():  # True if observation is images
-        obs_type = 'image'
-    else:
-        obs_type = 'serial'
-
-    obs_dim, z_dim, u_dim, r_dim = settings[env_name][obs_type]
-    obs_dim = obs_dim * stack
 
     if args.z_dim is None:
         args.z_dim = z_dim
@@ -312,9 +300,9 @@ def main(args):
         args.r_dim = r_dim
     else:
         r_dim = args.r_dim
-    
-    model = E2C(obs_dim=obs_dim, z_dim=z_dim, u_dim=u_dim, r_dim=r_dim,
-                env=env_name, stack=stack, use_cnn=args.cnn).to(ptu.device)
+
+    model = E2C(obs_shape=obs_shape, z_dim=z_dim, u_dim=u_dim, r_dim=r_dim,
+                env=env_name, stack=stack, args=args).to(ptu.device)
 
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
                            eps=1e-8, lr=lr, weight_decay=weight_decay)
