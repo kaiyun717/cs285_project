@@ -39,16 +39,18 @@ class Decoder(nn.Module):
         return self.net(z)
 
 class Transition(nn.Module):
-    def __init__(self, net, z_dim, u_dim):
+    def __init__(self, net, z_dim, u_dim, r_dim, dyn_rank):
         super(Transition, self).__init__()
         self.net = net  # network to output the last layer before predicting A_t, B_t and o_t
         self.net.apply(weights_init)
         self.h_dim = self.net[-3].out_features
         self.z_dim = z_dim
         self.u_dim = u_dim
+        self.r_dim = r_dim
+        self.dyn_rank = dyn_rank
 
         self.fc_A = nn.Sequential(
-            nn.Linear(self.h_dim, self.z_dim * 2), # v_t and r_t
+            nn.Linear(self.h_dim, self.dyn_rank * self.z_dim * 2), # v_t and r_t
             nn.Sigmoid()
         )
         self.fc_A.apply(weights_init)
@@ -57,6 +59,13 @@ class Transition(nn.Module):
         torch.nn.init.orthogonal_(self.fc_B.weight)
         self.fc_o = nn.Linear(self.h_dim, self.z_dim)
         torch.nn.init.orthogonal_(self.fc_o.weight)
+
+        self.fc_G = nn.Linear(self.h_dim, self.r_dim * self.z_dim)
+        torch.nn.init.orthogonal_(self.fc_G.weight)
+        self.fc_H = nn.Linear(self.h_dim, self.r_dim * self.u_dim)
+        torch.nn.init.orthogonal_(self.fc_H.weight)
+        self.fc_r0 = nn.Linear(self.h_dim, self.r_dim)
+        torch.nn.init.orthogonal_(self.fc_r0.weight)
 
     def forward(self, z_bar_t, q_z_t, u_t):
         """
@@ -69,11 +78,15 @@ class Transition(nn.Module):
         B_t = self.fc_B(h_t)
         o_t = self.fc_o(h_t)
 
-        v_t, r_t = self.fc_A(h_t).chunk(2, dim=1)
-        v_t = torch.unsqueeze(v_t, dim=-1)
-        r_t = torch.unsqueeze(r_t, dim=-2)
+        G_t = self.fc_G(h_t).view(-1, self.r_dim, self.z_dim)
+        H_t = self.fc_H(h_t).view(-1, self.r_dim, self.u_dim)
+        r0_t = self.fc_r0(h_t).view(-1, self.r_dim)
 
-        A_t = torch.eye(self.z_dim).repeat(z_bar_t.size(0), 1, 1).cuda() + torch.bmm(v_t, r_t)
+        v_t, r_t = self.fc_A(h_t).chunk(2, dim=1)
+        v_t = v_t.view(-1, self.z_dim, self.dyn_rank)
+        r_t = r_t.view(-1, self.dyn_rank, self.z_dim)
+
+        A_t = torch.eye(self.z_dim).repeat(z_bar_t.size(0), 1, 1).to(z_bar_t.device) + torch.bmm(v_t, r_t)
 
         B_t = B_t.view(-1, self.z_dim, self.u_dim)
 
@@ -81,7 +94,9 @@ class Transition(nn.Module):
 
         mean = A_t.bmm(mu_t.unsqueeze(-1)).squeeze(-1) + B_t.bmm(u_t.unsqueeze(-1)).squeeze(-1) + o_t
 
-        return mean, NormalDistribution(mean, logvar=q_z_t.logvar, v=v_t.squeeze(), r=r_t.squeeze(), A=A_t)
+        residual = G_t.bmm(mu_t.unsqueeze(-1)).squeeze(-1) + H_t.bmm(u_t.unsqueeze(-1)).squeeze(-1) + r0_t
+
+        return mean, NormalDistribution(mean, logvar=q_z_t.logvar, A=A_t), residual
 
 class PlanarEncoder(Encoder):
     def __init__(self, obs_dim = 1600, z_dim = 2):
@@ -118,8 +133,53 @@ class PlanarDecoder(Decoder):
         )
         super(PlanarDecoder, self).__init__(net, z_dim, obs_dim)
 
+class PlanarEncoderCNN(Encoder):
+    def __init__(self, obs_dim = 1600, z_dim = 2):
+        net = nn.Sequential(
+            nn.Unflatten(-1, (1, 40, 40)),
+            nn.Conv2d(1, 4, 3, stride=2, padding=1),
+            nn.BatchNorm2d(4),
+            nn.ReLU(),
+
+            nn.Conv2d(4, 8, 3, stride=2, padding=1),
+            nn.BatchNorm2d(8),
+            nn.ReLU(),
+
+            nn.Conv2d(8, 8, 3, stride=2, padding=1),
+            nn.BatchNorm2d(8),
+            nn.ReLU(),
+
+            nn.Flatten(),
+
+            nn.Linear(200, z_dim * 2)
+        )
+        super(PlanarEncoderCNN, self).__init__(net, obs_dim, z_dim)
+
+class PlanarDecoderCNN(Decoder):
+    def __init__(self, z_dim = 2, obs_dim = 1600):
+        net = nn.Sequential(
+            nn.Linear(z_dim, 200),
+            nn.BatchNorm1d(200),
+            nn.Unflatten(-1, (8, 5, 5)),
+            nn.ReLU(),
+
+            nn.ConvTranspose2d(8, 8, 3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(8),
+            nn.ReLU(),
+
+            nn.ConvTranspose2d(8, 4, 3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(4),
+            nn.ReLU(),
+
+            nn.ConvTranspose2d(4, 1, 3, stride=2, padding=1, output_padding=1),
+
+            nn.Flatten(),
+            nn.Sigmoid()
+        )
+        super(PlanarDecoderCNN, self).__init__(net, z_dim, obs_dim)
+
 class PlanarTransition(Transition):
-    def __init__(self, z_dim = 2, u_dim = 2):
+    def __init__(self, z_dim = 2, u_dim = 2, r_dim=4, dyn_rank=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 100),
             nn.BatchNorm1d(100),
@@ -129,7 +189,7 @@ class PlanarTransition(Transition):
             nn.BatchNorm1d(100),
             nn.ReLU()
         )
-        super(PlanarTransition, self).__init__(net, z_dim, u_dim)
+        super(PlanarTransition, self).__init__(net, z_dim, u_dim, r_dim, dyn_rank)
 
 class PendulumEncoder(Encoder):
     def __init__(self, obs_dim = 4608, z_dim = 3):
@@ -157,12 +217,13 @@ class PendulumDecoder(Decoder):
             nn.BatchNorm1d(800),
             nn.ReLU(),
 
-            nn.Linear(800, obs_dim)
+            nn.Linear(800, obs_dim),
+            nn.Sigmoid()
         )
         super(PendulumDecoder, self).__init__(net, z_dim, obs_dim)
 
 class PendulumTransition(Transition):
-    def __init__(self, z_dim = 3, u_dim = 1):
+    def __init__(self, z_dim = 3, u_dim = 1, r_dim=3, dyn_rank=1):
         net = nn.Sequential(
             nn.Linear(z_dim, 100),
             nn.BatchNorm1d(100),
@@ -172,10 +233,11 @@ class PendulumTransition(Transition):
             nn.BatchNorm1d(100),
             nn.ReLU()
         )
-        super(PendulumTransition, self).__init__(net, z_dim, u_dim)
+        super(PendulumTransition, self).__init__(net, z_dim, u_dim, r_dim, dyn_rank)
 
 CONFIG = {
     'planar': (PlanarEncoder, PlanarDecoder, PlanarTransition),
+    'planar_cnn': (PlanarEncoderCNN, PlanarDecoderCNN, PlanarTransition),
     'pendulum': (PendulumEncoder, PendulumDecoder, PendulumTransition)
 }
 

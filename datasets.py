@@ -44,6 +44,7 @@ class PlanarDataset(Dataset):
 
                 processed.append((self._process_image(before),
                                   np.array(sample['control']),
+                                  np.array(sample['costs']),
                                   self._process_image(after)))
 
             with open(preprocessed_file, 'wb') as f:
@@ -86,6 +87,7 @@ class GymPendulumDatasetV2(Dataset):
 
                 processed.append((self._process_image(before),
                                   np.array(sample['control']),
+                                  np.array(sample['costs']),
                                   self._process_image(after)))
 
             with open(preprocessed_file, 'wb') as f:

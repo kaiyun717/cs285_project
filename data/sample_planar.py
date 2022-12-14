@@ -48,11 +48,11 @@ def is_colliding(s):
     :return: if agent body overlaps with obstacles
     """
     if np.any([s - rw < 0, s + rw > height]):
-        return True
+        return 1
     x, y = s[0], s[1]
     for obs in obstacles_center:
         if np.abs(obs[0] - x) <= r_overlap and np.abs(obs[1] - y) <= r_overlap:
-            return True
+            return 2
     return False
 
 def random_step(s):
