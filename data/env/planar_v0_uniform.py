@@ -18,7 +18,7 @@ class PlanarEnvUniform(gym.Env):
             [10.5, 20.5], 
             [30.5, 20.5]
         ])
-        
+
         self.r_overlap = 0.5 # agent cannot be in any rectangular area with 
                              # obstacles as centers and half-width = 0.5
         self.r = 1           # radius of the obstacles when rendered
@@ -46,19 +46,19 @@ class PlanarEnvUniform(gym.Env):
             env_draw.ellipse((int(x)-int(self.r), 
                               int(y)-int(self.r), 
                               int(x)+int(self.r), 
-                              int(y)+int(self.r)), fill=255)
+                              int(y)+int(self.r)), fill=128)
         env_img = env_img.convert('L')
         self.env_arr = np.array(env_img) / 255.0
-    
+
     def reset(self):
         reset_state = self._reset_state()
         while self._is_colliding(reset_state):
             reset_state = self._reset_state()
         self.state = reset_state        
 
-        goal_state = self._reset_state()
-        while self._is_colliding(goal_state, delta=self.r_overlap*5):
-            goal_state = self._reset_state()
+        goal_state = np.array([25, 15]) # self._reset_state()
+        # while self._is_colliding(goal_state, delta=self.r_overlap*5):
+            # goal_state = self._reset_state()
         self.goal_state = goal_state
 
         aug_state = self._augument_state(np.vstack((self.goal_state, self.state)))
@@ -107,15 +107,15 @@ class PlanarEnvUniform(gym.Env):
         state_y = int(round(self.state[1]))
         state_in_bound = (state_x in range(self.height)) and (state_y in range(self.height))
         if state_in_bound:
-            env_array[state_x, state_y] = 1
+            env_array[max(state_x-1, 0):min(self.height-1, state_x+2), max(state_y-1, 0):min(self.height-1, state_y+2)] = 1
 
         # Goal state
         goal_x, goal_y = int(round(self.goal_state[0])), int(round(self.goal_state[1]))
-        env_array[goal_x, goal_y] = 1
-        env_array[goal_x+1, goal_y+1] = 1
-        env_array[goal_x-1, goal_y-1] = 1
-        env_array[goal_x+1, goal_y-1] = 1
-        env_array[goal_x-1, goal_y+1] = 1
+        env_array[goal_x, goal_y] = 0.75
+        env_array[goal_x+1, goal_y+1] = 0.75
+        env_array[goal_x-1, goal_y-1] = 0.75
+        env_array[goal_x+1, goal_y-1] = 0.75
+        env_array[goal_x-1, goal_y+1] = 0.75
 
         return env_array
 

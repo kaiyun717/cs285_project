@@ -153,15 +153,15 @@ class Transition(nn.Module):
 def make_cnn_encoder(obs_shape, z_dim, n_filters=32):
     channels, width, height = obs_shape
     return Encoder(nn.Sequential(
-        nn.Conv2d(channels, n_filters, 5, stride=2, padding=2),
-        nn.BatchNorm2d(n_filters),
+        nn.Conv2d(channels, n_filters/4, 5, stride=2, padding=2),
+        nn.BatchNorm2d(n_filters/4),
         nn.ReLU(),
 
-        nn.Conv2d(n_filters, n_filters, 5, stride=2, padding=2),
-        nn.BatchNorm2d(n_filters),
+        nn.Conv2d(n_filters/4, n_filters/2, 5, stride=2, padding=2),
+        nn.BatchNorm2d(n_filters/2),
         nn.ReLU(),
 
-        nn.Conv2d(n_filters, n_filters, 5, stride=2, padding=2),
+        nn.Conv2d(n_filters/2, n_filters, 5, stride=2, padding=2),
         nn.BatchNorm2d(n_filters),
         nn.ReLU(),
 
@@ -190,15 +190,15 @@ def make_cnn_decoder(obs_shape, z_dim, n_filters=32):
         nn.BatchNorm2d(n_filters),
         nn.ReLU(),
 
-        nn.ConvTranspose2d(n_filters, n_filters, 4, stride=2, padding=1, output_padding=0),
-        nn.BatchNorm2d(n_filters),
+        nn.ConvTranspose2d(n_filters, n_filters/2, 4, stride=2, padding=1, output_padding=0),
+        nn.BatchNorm2d(n_filters/2),
         nn.ReLU(),
 
-        nn.ConvTranspose2d(n_filters, n_filters, 4, stride=2, padding=1, output_padding=0),
-        nn.BatchNorm2d(n_filters),
+        nn.ConvTranspose2d(n_filters/2, n_filters/4, 4, stride=2, padding=1, output_padding=0),
+        nn.BatchNorm2d(n_filters/4),
         nn.ReLU(),
 
-        nn.ConvTranspose2d(n_filters, channels, 5, stride=1, padding=2, output_padding=0),
+        nn.ConvTranspose2d(n_filters/4, channels, 5, stride=1, padding=2, output_padding=0),
         nn.Sigmoid(),
     ))
 
@@ -209,7 +209,7 @@ def make_serial_encoder(obs_shape, z_dim, d_hidden=800, n_layers=3, use_batchnor
         nn.Flatten(),
 
         nn.Linear(np.prod(obs_shape), d_hidden),
-        nn.BatchNorm1d(d_hidden),
+        (nn.BatchNorm1d(d_hidden) if use_batchnorm else nn.Identity()),
         nn.ReLU(),
 
         *[nn.Sequential(
@@ -224,7 +224,7 @@ def make_serial_encoder(obs_shape, z_dim, d_hidden=800, n_layers=3, use_batchnor
 def make_serial_decoder(obs_shape, z_dim, d_hidden=800, n_layers=3, use_batchnorm=True):
     return Decoder(nn.Sequential(
         nn.Linear(z_dim, d_hidden),
-        nn.BatchNorm1d(d_hidden),
+        (nn.BatchNorm1d(d_hidden) if use_batchnorm else nn.Identity()),
         nn.ReLU(),
 
         *[nn.Sequential(
@@ -240,12 +240,14 @@ def make_serial_decoder(obs_shape, z_dim, d_hidden=800, n_layers=3, use_batchnor
 
 ################ MUJOCO TRANSITION ################
 class MujocoTransition(Transition):
-    def __init__(self, u_dim, z_dim, r_dim, d_hidden=256, n_layers=3, use_vr=False):   # NOTE: order is different!
+    def __init__(self, u_dim, z_dim, r_dim, d_hidden=256, n_layers=3, use_vr=False, use_batchnorm=False):   # NOTE: order is different!
         net = nn.Sequential(
             nn.Linear(z_dim, d_hidden),
+            nn.BatchNorm1d(d_hidden) if use_batchnorm else nn.Identity(),
             nn.ReLU(),
             *[nn.Sequential(
                 nn.Linear(d_hidden, d_hidden),
+                nn.BatchNorm1d(d_hidden) if use_batchnorm else nn.Identity(),
                 nn.ReLU(),
             ) for _ in range(n_layers)],
         )

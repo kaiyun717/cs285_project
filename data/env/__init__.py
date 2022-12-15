@@ -63,11 +63,12 @@ class SelectKeyWrapper(gym.Wrapper):
         }
 
 
-def wrap_env(env, grayscale=False, frame_skip=4, frame_stack=2, img_size=(48, 48), brightness_scale=(0, 1), squeeze_dim=None):
+def wrap_env(env, grayscale=False, frame_skip=4, frame_stack=2, img_size=None, brightness_scale=(0, 1), squeeze_dim=None):
     env = FrameSkipWrapper(env, skip=frame_skip)
     env = PixelObservationWrapper(env, pixels_only=False)
     env = SelectKeyWrapper(env, key='pixels')
-    env = gym.wrappers.ResizeObservation(env, shape=img_size)
+    if img_size:
+        env = gym.wrappers.ResizeObservation(env, shape=img_size)
     if grayscale:
         env = gym.wrappers.GrayScaleObservation(env)
     env = gym.wrappers.FrameStack(env, frame_stack)
@@ -75,7 +76,7 @@ def wrap_env(env, grayscale=False, frame_skip=4, frame_stack=2, img_size=(48, 48
     def rescale(img):
         if squeeze_dim is not None:
             img = np.squeeze(img, axis=squeeze_dim)
-        return np.clip((np.array(img) / 255.0 - brightness_scale[0]) / (brightness_scale[1] - brightness_scale[0]), a_min=0, a_max=1)
+        return np.clip((np.array(img) - brightness_scale[0]) / (brightness_scale[1] - brightness_scale[0]), a_min=0, a_max=1)
 
     env = gym.wrappers.TransformObservation(env, f=rescale)
 
@@ -89,7 +90,7 @@ def create_env_partial(env_cls, **kwargs_default):
     return create_env
 
 
-gym.register('Hopper-v4-uniform', entry_point=create_env_partial(HopperEnvUniform, grayscale=False, frame_stack=3))
-gym.register('Pendulum-v1-uniform', entry_point=create_env_partial(PendulumEnvUniform, grayscale=True, frame_stack=2, brightness_scale=(0.329, 1.0)))
-gym.register('Cartpole-v0-uniform', entry_point=create_env_partial(CartPoleEnvUniform, grayscale=True, frame_stack=2))
-gym.register('Planar-v0-uniform', entry_point=create_env_partial(PlanarEnvUniform, grayscale=False, frame_stack=2, squeeze_dim=-1))
+gym.register('Hopper-v4-uniform', entry_point=create_env_partial(HopperEnvUniform, grayscale=False, img_size=(64, 64), frame_stack=3, brightness_scale=(0, 255)))
+gym.register('Pendulum-v1-uniform', entry_point=create_env_partial(PendulumEnvUniform, grayscale=True, img_size=(48, 48), frame_stack=2, brightness_scale=(84, 255)))
+gym.register('Cartpole-v0-uniform', entry_point=create_env_partial(CartPoleEnvUniform, grayscale=True, img_size=(48, 48), frame_stack=2, brightness_scale=(0, 255)))
+gym.register('Planar-v0-uniform', entry_point=create_env_partial(PlanarEnvUniform, grayscale=False, img_size=None, frame_stack=1, brightness_scale=(0, 1)))

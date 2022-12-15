@@ -24,9 +24,9 @@ class E2C(nn.Module):
             self.encoder = networks.make_cnn_encoder(obs_shape=obs_shape, z_dim=z_dim, n_filters=args.cnn_n_filters)
             self.decoder = networks.make_cnn_decoder(obs_shape=obs_shape, z_dim=z_dim, n_filters=args.cnn_n_filters)
         else:
-            self.encoder = enc(obs_shape=obs_shape, z_dim=z_dim, use_batchnorm=args.mlp_use_batchnorm, n_layers=args.mlp_n_layers, d_hidden=args.mlp_enc_d_hidden)
-            self.decoder = dec(obs_shape=obs_shape, z_dim=z_dim, use_batchnorm=args.mlp_use_batchnorm, n_layers=args.mlp_n_layers, d_hidden=args.mlp_dec_d_hidden)
-        self.trans = trans(z_dim=z_dim, u_dim=u_dim, r_dim=r_dim, use_vr=args.use_vr, d_hidden=args.trans_d_hidden, n_layers=args.trans_n_layers)
+            self.encoder = enc(obs_shape=obs_shape, z_dim=z_dim, use_batchnorm=args.mlp_use_batchnorm, n_layers=args.mlp_enc_n_layers, d_hidden=args.mlp_enc_d_hidden)
+            self.decoder = dec(obs_shape=obs_shape, z_dim=z_dim, use_batchnorm=args.mlp_use_batchnorm, n_layers=args.mlp_dec_n_layers, d_hidden=args.mlp_dec_d_hidden)
+        self.trans = trans(z_dim=z_dim, u_dim=u_dim, r_dim=r_dim, use_vr=args.use_vr, d_hidden=args.trans_d_hidden, n_layers=args.trans_n_layers, use_batchnorm=args.trans_batchnorm)
 
     def encode(self, x):
         """

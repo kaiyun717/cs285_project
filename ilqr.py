@@ -2,7 +2,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-def ilqr_forwards(model, x0, xbar, ubar, K, k, horizon, scale):
+def ilqr_forwards(dynamics, x0, xbar, ubar, K, k, horizon, scale):
     xs = [x0]
     us = []
     rs = []
@@ -19,7 +19,7 @@ def ilqr_forwards(model, x0, xbar, ubar, K, k, horizon, scale):
     for t in range(horizon):
         u = np.matmul(K[t], x - xbar[t]) + scale * k[t] + ubar[t]
 
-        x, cost, residuals, Fx, Fu, Rx, Ru, rx, ru = model(x, u)
+        x, cost, residuals, Fx, Fu, Rx, Ru, rx, ru = dynamics(x, u)
 
         # x' = Fx*x + Fu*u + offset
         # cost = 1/2[x^T (Rx^T Rx) x + u^T (Ru^T Ru) u + 2*x^T (Rx^T Ru) u] + rx^T x + ru^T u + offset
@@ -39,16 +39,16 @@ def ilqr_forwards(model, x0, xbar, ubar, K, k, horizon, scale):
 
     return xs, us, rs, cost_total, derivs
 
-def ilqr_forwards_line_search(model, x0, xbar, ubar, K, k, horizon, cost_total_prev, alpha=0.5, num_iters=10):
+def ilqr_forwards_line_search(model, x0, xbar, ubar, K, k, horizon, cost_total_prev, alpha=0.5, num_iters=10, verbose=False):
     for i in range(num_iters):
         xs_new, us_new, rs_new, cost_total_new, derivs_new = ilqr_forwards(model, x0, xbar, ubar, K, k, horizon, alpha ** i)
         if cost_total_new < cost_total_prev:
             return xs_new, us_new, rs_new, cost_total_new, derivs_new
-        else:
+        elif verbose:
             print('Line search failed, trying again with alpha =', alpha ** (i + 1))
-    raise Exception('Line search failed')
+    return None
 
-def ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min):
+def ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min, ubar, verbose=False):
     Fxs, Fus, Rxs, Rus, rxs, rus = derivs
     Vxx = np.zeros_like(Fxs[-1])
     Vx = np.zeros_like(Fxs[-1][0, :])
@@ -72,11 +72,14 @@ def ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min):
         Qx = Lx + Vx @ Fxs[t]
         Qu = Lu + Vx @ Fus[t]
 
+        # print(Luu)
+
         Quu_vals, Quu_vecs = np.linalg.eigh(Quu)
 
         if np.any(Quu_vals < 0):
             increase_regularization = True
-            print('Quu is not positive definite, increasing regularization')
+            if verbose:
+                print('Quu is not positive definite, increasing regularization')
 
         # Quu_vals = np.maximum(Quu_vals, 1e-6)
 
@@ -84,6 +87,9 @@ def ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min):
 
         K = -Quu_inv @ Qxu.T
         k = -Quu_inv @ Qu
+
+        K[np.absolute(k + ubar[t]) > 2] = 0
+        k = np.clip(k + ubar[t], -2, 2) - ubar[t]
 
         Vxx = Qxx - Qxu @ Quu_inv @ Qxu.T + regularization * np.eye(Qxx.shape[0])
         Vx = Qx - Qxu @ Quu_inv @ Qu
@@ -100,7 +106,7 @@ def ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min):
 
     return (Vxxs, Vxs, Ks, ks), increase_regularization
 
-def do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=10, num_line_search_iters=10, regularization_init=1e-3, Quu_min=1e-3):
+def do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=10, num_line_search_iters=10, regularization_init=1e-3, Quu_min=1e-3, verbose=False):
     K = [np.zeros((d_control, d_state)) for _ in range(horizon)]
     k = [np.zeros((d_control,)) for _ in range(horizon)]
     Vxx = [np.zeros((d_state, d_state)) for _ in range(horizon)]
@@ -113,22 +119,24 @@ def do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=10,
     cost_total = np.inf
 
     for i in range(num_iters):
-        try:
-            xbar, ubar, rbar, cost_total, derivs = ilqr_forwards_line_search(dynamics, x0, xbar, ubar, K, k, horizon, cost_total, num_iters=num_line_search_iters)
-        except Exception as e:
+        ls_result = ilqr_forwards_line_search(dynamics, x0, xbar, ubar, K, k, horizon, cost_total, num_iters=num_line_search_iters, verbose=verbose)
+
+        if ls_result is None:
+            if verbose:
+                print('Line search failed, aborting')
             break
 
-        (Vxx, Vx, K, k), increase_regularization = ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min)
+        xbar, ubar, rbar, cost_total, derivs = ls_result
+
+        (Vxx, Vx, K, k), increase_regularization = ilqr_backwards(rbar, derivs, horizon, regularization, Quu_min, ubar, verbose=verbose)
 
         if increase_regularization:
             regularization *= 2
         else:
             regularization *= 0.8
 
-        print("Iteration: ", i, " Cost: ", cost_total, " Regularization: ", regularization)
-        # plt.plot([x[0] for x in xbar])
-
-    # plt.show()
+        if verbose:
+            print("Iteration: ", i, " Cost: ", cost_total, " Regularization: ", regularization)
     
     return xbar, ubar, K, cost_total
 
@@ -169,7 +177,7 @@ def main_linear():
     d_residual = 2
     horizon = 100
 
-    xbar, ubar, K, cost_total = do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=30)
+    xbar, ubar, K, cost_total = do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=30, verbose=True)
 
 # x, residuals, Fx, Fu, Rx, Ru, rx, ru = model(xs[-1], u)
 def main_pendulum():
@@ -214,7 +222,7 @@ def main_pendulum():
     d_residual = 2
     horizon = 50
 
-    xbar, ubar, K, cost_total = do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=25)
+    xbar, ubar, K, cost_total = do_ilqr(dynamics, x0, d_state, d_control, d_residual, horizon, num_iters=25, verbose=True)
 
 if __name__ == '__main__':
     main_pendulum()

@@ -25,6 +25,7 @@ class OfflineDataset(Dataset):
             self.observations = self.observations.permute(0, 1, 4, 2, 3).flatten(1, 2)
             self.next_observations = self.next_observations.permute(0, 1, 4, 2, 3).flatten(1, 2)
         else:
+            print(self.observations.shape, self.next_observations.shape, stack, image_size)
             assert self.observations.shape[1:] == (stack, image_size, image_size)
             assert self.next_observations.shape[1:] == (stack, image_size, image_size)
 

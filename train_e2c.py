@@ -29,7 +29,7 @@ torch.set_default_dtype(torch.float32)
 device = torch.device("cuda")
                                   # obs,            z,  u   r
 settings = {'cartpole': {'image': ((2, 64, 64),     8,  1,  3)},
-            'planar':   {'image': ((2, 40, 40),     8,  2,  3)},
+            'planar':   {'image': ((1, 40, 40),     8,  2,  3)},
             'pendulum': {'image': ((2, 48, 48),     8,  1,  4)},
             'hopper':   {'image': ((9, 64, 64),     16, 3,  8),
                         'serial': (11,              16,  3,  8)}}
@@ -48,6 +48,7 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
         recon_weight = 10
     elif recon_loss == 'l1':
         recon_loss = torch.nn.L1Loss(reduction='none')
+        recon_weight = 1
 
     assert x_recon.min() >= 0 and x_recon.max() <= 1
     assert x_next_pred.min() >= 0 and x_next_pred.max() <= 1
@@ -55,8 +56,8 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
     assert x_next.min() >= 0 and x_next.max() <= 1
 
     # lower-bound loss
-    recon_term = recon_weight * recon_loss(x_recon, x).sum(dim=(1, 2, 3)).mean(dim=0)
-    pred_loss = recon_weight * recon_loss(x_next_pred, x_next).sum(dim=(1, 2, 3)).mean(dim=0)
+    recon_term = recon_weight * recon_loss(x_recon, x).mean(dim=0).sum()
+    pred_loss = recon_weight * recon_loss(x_next_pred, x_next).mean(dim=0).sum()
 
     kl_term = - 0.5 * torch.mean(torch.sum(1 + q_z.logvar - q_z.mean.pow(2) - q_z.logvar.exp(), dim = 1))
 
@@ -67,7 +68,7 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
 
     cost_term = F.mse_loss(cost_pred, cost)
 
-    results = lower_bound + args.lam * consis_term + cost_term + args.jac_weight * (jac_loss_dyn + jac_loss_res), {
+    results = {
         'recon': recon_term.item(),
         'pred': pred_loss.item(),
         'kl': kl_term.item(),
@@ -77,7 +78,9 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
         'z_std_rms': q_z.mean.pow(2).sum(-1).mean().sqrt().item(),
     }
 
-    if dyn_mats is not None:
+    loss = lower_bound + args.lam * consis_term + cost_term
+
+    if (dyn_mats is not None) and (args.jac_loss_start is not False) and (step > args.jac_loss_start):
         A_t, B_t, _, G_t, H_t, _ = dyn_mats
 
         # jacobian loss
@@ -101,8 +104,9 @@ def compute_loss(x, u_t, x_next, q_z_next, x_recon, x_next_pred, q_z, q_z_next_p
         results['jac_dyn'] = jac_loss_dyn.item()
         results['jac_cost'] = jac_loss_res.item()
         results['jac_dyn_err'] = (zhat_next_jac.mean - zhat_next_true.mean).pow(2).sum(-1).mean().sqrt().item()
+        loss += args.jac_weight * (jac_loss_dyn + jac_loss_res)
 
-    return results
+    return loss, results
 
 def train(model, train_loader, optimizer, global_step, args):
     model.train()
@@ -231,7 +235,7 @@ def plot_preds(model, env_name, vis_loader, num_eval, stack):
     true_x_next, pred_x_next = predict_x_next(model, env_name, vis_loader, num_eval, stack)
 
     # plot the predicted and true observations
-    fig, axes =plt.subplots(nrows=2, ncols=len(true_x_next))
+    fig, axes = plt.subplots(nrows=2, ncols=len(true_x_next), figsize=(20, 10))
     plt.setp(axes, xticks=[], yticks=[])
     pad = 5
     axes[0, 0].annotate('True observations', xy=(0, 0.5), xytext=(-axes[0,0].yaxis.labelpad - pad, 0),
@@ -245,7 +249,7 @@ def plot_preds(model, env_name, vis_loader, num_eval, stack):
         axes[0, idx].imshow(true_x_next[idx], cmap='Greys', vmin=0, vmax=1)
         axes[1, idx].imshow(pred_x_next[idx], cmap='Greys', vmin=0, vmax=1)
 
-    fig.tight_layout()
+    fig.subplots_adjust(wspace=0, hspace=0)
     return fig
 
 def main(args):
@@ -306,7 +310,7 @@ def main(args):
     optimizer = optim.Adam(model.parameters(), betas=(0.9, 0.999), 
                            eps=1e-8, lr=lr, weight_decay=weight_decay)
 
-    os.makedirs('/tmp/checkpoint', exist_ok=True)
+    os.makedirs(f'/tmp/checkpoint-{args.project_name}', exist_ok=True)
     for i in range(epoches):
         avg_loss, train_metrics = train(model, train_loader, optimizer, global_step=i, args=args)
         print('Epoch %d' % i)
@@ -316,7 +320,7 @@ def main(args):
         print('State loss: ' + str(eval_metrics['recon']))
         print('Next state loss: ' + str(eval_metrics['pred']))
 
-        wandb.init(project="e2c", config=args.__dict__, notes=exp_name)
+        wandb.init(project=args.project_name, config=args.__dict__, notes=exp_name)
 
         # ...log the running loss
         wandb.log({
@@ -332,13 +336,16 @@ def main(args):
             }, step=i+1, commit=False)
             print('Saving the model.............')
 
-            torch.save(model.state_dict(), '/tmp/checkpoint/model_' + str(i + 1))
-            wandb.save('/tmp/checkpoint/model_' + str(i + 1))
+            state_dict_path = f'/tmp/checkpoint-{args.project_name}/model_' + str(i + 1)
+            torch.save(model.state_dict(), state_dict_path)
+            wandb.save(state_dict_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='train e2c model')
 
     # the default value is used for the planar task
+    parser.add_argument('--project_name', type=str, default='e2c',
+                        help='the W&B project name')
     parser.add_argument('--sample_path', required=True, type=str, 
                         help='the "sample-M_D_Y_hms" folder for samples')
     parser.add_argument('--env', required=True, type=str, 
@@ -355,6 +362,9 @@ if __name__ == "__main__":
                         help='the weight of the consistency term')
     parser.add_argument('--jac_weight', default=1.0, type=float,
                         help='the weight of the Jacobian terms')
+    parser.add_argument('--no_jac_loss', dest="jac_loss_start", action="store_false",
+                        help='disable the extra Jacobian loss')
+    parser.add_argument('--jac_loss_start', default=0, type=int, help='when to start applying jacobian loss')
     parser.add_argument('--num_iter', default=5000, type=int, 
                         help='the number of epoches')
     parser.add_argument('--iter_save', default=1000, type=int, 
@@ -381,13 +391,14 @@ if __name__ == "__main__":
                         help='reconstruction loss type (l1, bce or mse)')
     parser.add_argument('--use_vr', action="store_true",
                         help='use A=I + vr^T')
-    # args.mlp_use_batchnorm, n_layers=args.mlp_n_layers, d_hidden=args.mlp_enc_d_hidden
     parser.add_argument('--mlp_use_batchnorm', action="store_true")
-    parser.add_argument('--mlp_n_layers', type=int, default=2)
-    parser.add_argument('--mlp_enc_d_hidden', type=int, default=256)
-    parser.add_argument('--mlp_dec_d_hidden', type=int, default=256)
+    parser.add_argument('--mlp_enc_n_layers', type=int, default=3)
+    parser.add_argument('--mlp_dec_n_layers', type=int, default=3)
+    parser.add_argument('--mlp_enc_d_hidden', type=int, default=800)
+    parser.add_argument('--mlp_dec_d_hidden', type=int, default=800)
     parser.add_argument('--trans_d_hidden', type=int, default=256)
-    parser.add_argument('--trans_n_layers', type=int, default=3)
+    parser.add_argument('--trans_n_layers', type=int, default=1)
+    parser.add_argument('--trans_no_batchnorm', dest="trans_batchnorm", action="store_false")
     parser.add_argument('--cnn_n_filters', type=int, default=32)
     
     args = parser.parse_args()

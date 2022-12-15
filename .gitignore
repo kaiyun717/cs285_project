@@ -1,5 +1,7 @@
 logs/
+*.bak
 result/
+wandb/
 data/**/*.png
 **/*.pyc
 .ipynb_checkpoints/
